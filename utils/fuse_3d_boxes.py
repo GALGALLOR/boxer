@@ -1,0 +1,1264 @@
+#!/usr/bin/env python3
+# pyre-ignore-all-errors
+
+"""
+3D Bounding Box Fusion System
+
+Fuses a set of ObbTW detections into static, de-duplicated instances.
+Uses 3D IoU for matching and confidence-weighted averaging for fusion.
+
+Algorithm Overview:
+1. Compute pairwise 3D IoU matrix
+2. Cluster detections using connected components (IoU threshold)
+3. Fuse boxes within each cluster (confidence-weighted averaging)
+4. Filter by minimum detection count threshold
+"""
+
+import argparse
+import math
+import os
+import time
+from dataclasses import dataclass
+from typing import List, Optional
+
+import torch
+from utils.file_io import ObbCsvWriter2, read_obb_csv
+from utils.obb import make_obb, ObbTW, iou_mc7, iou_mc7_sparse
+from utils.pose import PoseTW, rotation_from_euler
+from utils.tensor_utils import (
+    pad_string,
+    string2tensor,
+    tensor2string,
+    unpad_string,
+)
+
+
+# =============================================================================
+# Shared helper functions (used by both BoundingBox3DFuser and BoundingBox3DTracker)
+# =============================================================================
+
+
+def weighted_yaw_mean(
+    angles: torch.Tensor, weights: torch.Tensor, eps: float = 1e-8
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """
+    Weighted mean of 1D rotations with 180-degree symmetry (pi-periodic).
+
+    Args:
+        angles: (N,) in radians
+        weights: (N,) nonnegative
+
+    Returns:
+        mean_angle: scalar (radians, in [-pi/2, pi/2) equivalent sense)
+        resultant: scalar, magnitude of mean vector (0 = ambiguous)
+    """
+    angles = angles.float()
+    weights = weights.float()
+
+    # Double the angles to resolve pi-periodicity
+    phi = 2.0 * angles  # (N,)
+
+    # Weighted sum of unit vectors on the circle
+    cos_phi = torch.cos(phi)
+    sin_phi = torch.sin(phi)
+
+    x = torch.sum(weights * cos_phi)
+    y = torch.sum(weights * sin_phi)
+
+    # Resultant length (can be used as a confidence / concentration)
+    resultant = torch.sqrt(x * x + y * y)
+
+    # Handle degenerate case: near-zero resultant => no clear mean direction
+    if resultant < eps:
+        mean_angle = torch.tensor(0.0, device=angles.device)
+    else:
+        mean_phi = torch.atan2(y, x)  # in [-pi, pi]
+        mean_angle = 0.5 * mean_phi  # back to pi-periodic space
+
+    return mean_angle, resultant
+
+
+def angular_distance(angle1: float, angle2: float) -> float:
+    """
+    Compute smallest angular distance between two angles accounting for 180-degree symmetry.
+
+    Args:
+        angle1: First angle in radians
+        angle2: Second angle in radians
+
+    Returns:
+        Distance in radians [0, pi/2]
+    """
+    # Normalize difference to [-pi, pi]
+    diff = (angle1 - angle2 + math.pi) % (2 * math.pi) - math.pi
+
+    # Account for 180-degree symmetry: treat theta and theta+pi as equivalent
+    # Map to [0, pi/2]
+    diff = abs(diff)
+    if diff > math.pi / 2:
+        diff = math.pi - diff
+
+    return diff
+
+
+def align_boxes_r90(
+    sizes: torch.Tensor,
+    yaw_angles: torch.Tensor,
+    weights: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """
+    Align boxes to canonical orientation accounting for 90-degree rotation symmetry.
+
+    For rectangular boxes, a 90-degree rotation with swapped dimensions represents the same
+    object orientation (e.g., 2m x 1m at 0 degrees == 1m x 2m at 90 degrees).
+
+    Strategy:
+    1. Find canonical orientation (weighted mean yaw)
+    2. For each box, determine if swapping dimensions + rotating 90 degrees gives better alignment
+    3. Apply swaps and yaw adjustments where needed
+
+    Args:
+        sizes: (M, 3) tensor of [width, height, depth]
+        yaw_angles: (M,) tensor of yaw angles in radians
+        weights: (M,) tensor of fusion weights
+
+    Returns:
+        aligned_sizes: (M, 3) tensor with potentially swapped width/height
+        aligned_yaws: (M,) tensor with potentially adjusted yaw angles
+    """
+    M = len(sizes)
+    device = sizes.device
+
+    # Compute reference yaw (weighted mean with 180-degree symmetry)
+    ref_yaw, _ = weighted_yaw_mean(yaw_angles, weights)
+
+    # For each box, test both configurations:
+    # Config A: Keep original size and yaw
+    # Config B: Swap width/height and rotate yaw by +/-90 degrees
+
+    aligned_sizes = sizes.clone()
+    aligned_yaws = yaw_angles.clone()
+
+    for i in range(M):
+        yaw = yaw_angles[i].item()
+        size = sizes[i]  # (3,) [width, height, depth]
+
+        # Config A: Original orientation
+        diff_a = angular_distance(yaw, ref_yaw.item())
+
+        # Config B: Swapped dimensions, rotated +/-90 degrees
+        # Try both +90 and -90 and pick closer one
+        yaw_plus_90 = yaw + math.pi / 2
+        yaw_minus_90 = yaw - math.pi / 2
+
+        diff_plus_90 = angular_distance(yaw_plus_90, ref_yaw.item())
+        diff_minus_90 = angular_distance(yaw_minus_90, ref_yaw.item())
+
+        # Choose best rotation adjustment
+        if diff_plus_90 < diff_minus_90:
+            yaw_b = yaw_plus_90
+            diff_b = diff_plus_90
+        else:
+            yaw_b = yaw_minus_90
+            diff_b = diff_minus_90
+
+        # If swapped config is better aligned, apply the swap
+        if diff_b < diff_a:
+            # Swap width and height
+            aligned_sizes[i] = torch.tensor([size[1], size[0], size[2]], device=device)
+            aligned_yaws[i] = yaw_b
+
+    return aligned_sizes, aligned_yaws
+
+
+@dataclass
+class FusedInstance:
+    """A fused, static 3D instance as ObbTW."""
+
+    # Fused ObbTW instance
+    obb: ObbTW
+    # Number of detections that contributed to this instance
+    support_count: int
+    # Indices of detections that were merged
+    detection_indices: List[int]
+
+
+def precompute_semantic_embeddings(
+    obbs: ObbTW, device: Optional[str] = None
+) -> torch.Tensor:
+    """Precompute semantic embeddings for all OBBs (one-time operation with GPU acceleration).
+
+    Uses caching to avoid recomputing embeddings for duplicate text strings.
+
+    Args:
+        obbs: ObbTW tensor containing all detections
+        device: Device to use for computation ("cuda", "mps", or "cpu"). If None, auto-detects.
+
+    Returns:
+        Tensor of shape (N, 384) with normalized embeddings
+    """
+    if len(obbs) == 0:
+        return torch.empty(0, 384)
+
+    print(f"\n{'=' * 60}")
+    print("PRECOMPUTING SEMANTIC EMBEDDINGS")
+    print(f"{'=' * 60}")
+
+    # Get all text labels
+    text_strings = obbs.text_string()
+    total_count = len(text_strings)
+
+    # Find unique texts and build mapping
+    unique_texts = []
+    text_to_idx = {}  # Maps text -> index in unique_texts
+    text_indices = []  # Maps each OBB -> index in unique_texts
+
+    for text in text_strings:
+        if text not in text_to_idx:
+            text_to_idx[text] = len(unique_texts)
+            unique_texts.append(text)
+        text_indices.append(text_to_idx[text])
+
+    unique_count = len(unique_texts)
+    duplicate_count = total_count - unique_count
+
+    print(f"Total detections: {total_count}")
+    print(f"Unique texts: {unique_count}")
+    print(
+        f"Duplicates avoided: {duplicate_count} ({100 * duplicate_count / total_count:.1f}%)"
+    )
+
+    # Show first few unique examples
+    for i, text in enumerate(unique_texts[:5]):
+        count = sum(1 for t in text_strings if t == text)
+        print(f"  [{i}] {text} (x{count})")
+    if unique_count > 5:
+        print(f"  ... and {unique_count - 5} more unique texts")
+
+    # Auto-detect device if not specified
+    if device is None:
+        if torch.cuda.is_available():
+            device = "cuda"
+        elif torch.backends.mps.is_available():
+            device = "mps"
+        else:
+            device = "cpu"
+
+    print(f"Using device: {device}")
+
+    # Initialize model
+    try:
+        from utils.condense_text import SentenceTransformerWrapper
+    except ImportError:
+        raise ImportError("condense_text module not available")
+
+    model = SentenceTransformerWrapper()
+
+    # Compute embeddings only for unique texts
+    import time
+
+    start_time = time.time()
+    unique_embeddings = model.forward(unique_texts)  # (unique_count, 384)
+    elapsed_time = time.time() - start_time
+
+    # Expand embeddings back to full size using indices
+    text_indices_tensor = torch.tensor(text_indices, dtype=torch.long)
+    embeddings = unique_embeddings[text_indices_tensor]  # (total_count, 384)
+
+    print(f"\n✓ Computed {unique_count} unique embeddings in {elapsed_time:.2f}s")
+    print(f"✓ Expanded to {total_count} total embeddings")
+    print(f"  Embedding shape: {embeddings.shape}")
+    print(f"{'=' * 60}\n")
+
+    return embeddings
+
+
+class BoundingBox3DFuser:
+    """Fuses ObbTW detections into static instances using 3D IoU."""
+
+    def __init__(
+        self,
+        iou_threshold: float = 0.3,
+        min_detections: int = 4,
+        samp_per_dim: int = 8,
+        confidence_weighting: str = "robust",
+        semantic_threshold: float = 0.7,
+        enable_nms: bool = False,
+        nms_iou_threshold: float = 0.6,
+        conf_threshold: float = 0.55,
+    ) -> None:
+        """
+        Initialize 3D box fusion system.
+
+        Args:
+            iou_threshold: Minimum 3D IoU to consider boxes as potential matches
+            min_detections: Minimum number of detections required to create an instance
+            confidence_weighting: confidence_weighting for confidence weighting (uniform, linear, quadratic)
+            semantic_threshold: Minimum semantic similarity to allow merging (hard cutoff)
+            enable_nms: If True, apply NMS to fused boxes with high IoU and semantic similarity
+            nms_iou_threshold: IoU threshold for NMS (boxes with IoU > this are redundant)
+            conf_threshold: Minimum confidence threshold to keep detections (default: 0.55)
+        """
+        self.iou_threshold = iou_threshold
+        self.min_detections = min_detections
+        self.confidence_weighting = confidence_weighting
+        self.samp_per_dim = samp_per_dim
+        self.semantic_threshold = semantic_threshold
+        self.enable_nms = enable_nms
+        self.nms_iou_threshold = nms_iou_threshold
+        self.conf_threshold = conf_threshold
+
+    def fuse(
+        self, detections: ObbTW, semantic_embeddings: Optional[torch.Tensor] = None
+    ) -> List[FusedInstance]:
+        """
+        Fuse ObbTW detections into static instances.
+
+        Args:
+            detections: ObbTW tensor of shape (N, 165) containing N detections
+            semantic_embeddings: Optional tensor of shape (N, D) with normalized embeddings
+
+        Returns:
+            List of fused instances
+        """
+        overall_start = time.time()
+
+        assert isinstance(detections, ObbTW), "Detections must be ObbTW tensor"
+        assert detections.ndim == 2, "Detections must be 2D tensor (N, 165)"
+
+        n = detections.shape[0]
+        if n == 0:
+            return []
+
+        # Step 0: Filter by confidence threshold
+        if self.conf_threshold > 0:
+            conf_mask = detections.prob.squeeze() >= self.conf_threshold
+            n_before = n
+            detections = detections[conf_mask]
+            if semantic_embeddings is not None:
+                semantic_embeddings = semantic_embeddings[conf_mask]
+            n = detections.shape[0]
+            print(
+                f"Filtered {n_before - n} detections below conf_threshold={self.conf_threshold} "
+                f"({n_before} -> {n})"
+            )
+            if n == 0:
+                return []
+
+        print(f"\n{'=' * 60}")
+        print(f"FUSION PERFORMANCE BREAKDOWN ({n} detections)")
+        print(f"{'=' * 60}")
+
+        # Step 1: Compute pairwise 3D IoU matrix
+        print("\n[1/4] Computing 3D IoU matrix...")
+        step1_start = time.time()
+
+        if torch.backends.mps.is_available():
+            detections = detections.to("mps")
+        elif torch.cuda.is_available():
+            detections = detections.to("cuda")
+
+        # Auto-detect whether to use sparse IoU based on memory requirements
+        estimated_memory_gb = (n * n * 4) / (1024**3)
+        use_sparse = estimated_memory_gb > 4.0  # Use sparse if >4GB needed
+
+        if use_sparse:
+            print(
+                f"  Using SPARSE IoU (dense would require {estimated_memory_gb:.1f}GB)"
+            )
+            iou_matrix = iou_mc7_sparse(
+                detections,
+                detections,
+                samp_per_dim=self.samp_per_dim,
+                iou_threshold=self.iou_threshold,  # Only store values we care about
+                verbose=True,
+            )
+        else:
+            iou_matrix = iou_mc7(
+                detections,
+                detections,
+                samp_per_dim=self.samp_per_dim,
+                verbose=True,
+            )
+
+        detections = detections.to("cpu")  # Move back to CPU
+        # Move IoU matrix to CPU for combining with semantic matrix
+        if iou_matrix.is_sparse:
+            iou_matrix = iou_matrix.coalesce().cpu()
+        else:
+            iou_matrix = iou_matrix.to("cpu")
+
+        step1_time = time.time() - step1_start
+        print(f"  ✓ IoU matrix: {step1_time:.3f}s")
+
+        # Step 1.5: Compute semantic similarity matrix if embeddings provided
+        semantic_matrix = None
+        step1_5_time = 0.0
+        if semantic_embeddings is not None:
+            print("\n[1.5/4] Computing semantic similarity matrix...")
+            step1_5_start = time.time()
+            # Cosine similarity: embeddings are already normalized
+            semantic_matrix = torch.mm(
+                semantic_embeddings, semantic_embeddings.t()
+            )  # (N, N)
+            step1_5_time = time.time() - step1_5_start
+            print(f"  ✓ Semantic matrix: {step1_5_time:.3f}s")
+
+        # Step 2: Cluster detections using combined similarity
+        print("\n[2/4] Clustering detections...")
+        step2_start = time.time()
+        clusters = self._cluster_detections(iou_matrix, semantic_matrix)
+        step2_time = time.time() - step2_start
+        print(f"  ✓ Found {len(clusters)} clusters: {step2_time:.3f}s")
+
+        # Step 3: Fuse boxes within each cluster
+        print("\n[3/4] Fusing clusters...")
+        step3_start = time.time()
+        instances = self._fuse_clusters(detections, clusters)
+        step3_time = time.time() - step3_start
+        print(f"  ✓ Fused {len(instances)} instances: {step3_time:.3f}s")
+
+        # Step 4: Filter by minimum detection count
+        print("\n[4/4] Filtering by minimum detections...")
+        step4_start = time.time()
+        instances = [
+            inst for inst in instances if inst.support_count >= self.min_detections
+        ]
+        step4_time = time.time() - step4_start
+        print(f"  ✓ {len(instances)} instances after filtering: {step4_time:.3f}s")
+
+        # Step 5: Optional NMS on fused boxes
+        step5_time = 0.0
+        if self.enable_nms and len(instances) > 0:
+            print("\n[5/5] Applying NMS to fused boxes...")
+            step5_start = time.time()
+            instances = self._apply_nms_to_fused(instances)
+            step5_time = time.time() - step5_start
+            print(f"  ✓ {len(instances)} instances after NMS: {step5_time:.3f}s")
+
+        overall_time = time.time() - overall_start
+
+        print("\n" + "=" * 60)
+        print("TIMING SUMMARY:")
+        print(
+            f"  1. IoU computation:     {step1_time:6.3f}s ({step1_time / overall_time * 100:5.1f}%)"
+        )
+        if semantic_embeddings is not None:
+            print(
+                f"  1.5 Semantic similarity: {step1_5_time:6.3f}s ({step1_5_time / overall_time * 100:5.1f}%)"
+            )
+        print(
+            f"  2. Clustering:          {step2_time:6.3f}s ({step2_time / overall_time * 100:5.1f}%)"
+        )
+        print(
+            f"  3. Fusion:              {step3_time:6.3f}s ({step3_time / overall_time * 100:5.1f}%)"
+        )
+        print(
+            f"  4. Filtering:           {step4_time:6.3f}s ({step4_time / overall_time * 100:5.1f}%)"
+        )
+        if self.enable_nms:
+            print(
+                f"  5. NMS:                 {step5_time:6.3f}s ({step5_time / overall_time * 100:5.1f}%)"
+            )
+        print("  ----------------------------------")
+        print(f"  TOTAL:                  {overall_time:6.3f}s")
+        print("=" * 60 + "\n")
+
+        return instances
+
+    def _cluster_detections(
+        self, iou_matrix: torch.Tensor, semantic_matrix: Optional[torch.Tensor] = None
+    ) -> List[List[int]]:
+        """
+        Cluster detections using connected components on combined similarity graph.
+
+        Handles both dense and sparse IoU matrices.
+
+        Args:
+            iou_matrix: NxN IoU matrix (dense or sparse PyTorch tensor)
+            semantic_matrix: Optional NxN semantic similarity matrix (cosine similarity)
+
+        Returns:
+            List of clusters, where each cluster is a list of detection indices
+        """
+        from scipy.sparse import csr_matrix
+        from scipy.sparse.csgraph import connected_components
+
+        is_sparse = iou_matrix.is_sparse
+
+        if is_sparse:
+            # Sparse path: IoU matrix is already thresholded from iou_mc7_sparse
+            iou_coo = iou_matrix.coalesce()
+            indices = iou_coo.indices()  # (2, nnz)
+            values = iou_coo.values()  # (nnz,)
+
+            if semantic_matrix is not None:
+                # Look up semantic similarities only for non-zero IoU pairs
+                rows, cols = indices[0], indices[1]
+                semantic_values = semantic_matrix[rows, cols]
+
+                # Filter by semantic threshold
+                keep_mask = semantic_values >= self.semantic_threshold
+
+                # Count blocked pairs for logging
+                total_pairs = len(values)
+                blocked_pairs = (~keep_mask).sum().item()
+                print(
+                    f"  Semantic cutoff at {self.semantic_threshold:.2f}: blocked {blocked_pairs}/{total_pairs} potential merges"
+                )
+
+                # Filter indices and values
+                indices = indices[:, keep_mask]
+                values = values[keep_mask]
+
+            # Build scipy sparse adjacency matrix directly
+            # Values already >= iou_threshold from iou_mc7_sparse, so all remaining entries form edges
+            n = iou_matrix.shape[0]
+            if indices.shape[1] > 0:
+                adjacency = csr_matrix(
+                    (
+                        torch.ones(indices.shape[1]).numpy(),
+                        (indices[0].numpy(), indices[1].numpy()),
+                    ),
+                    shape=(n, n),
+                )
+            else:
+                adjacency = csr_matrix((n, n))
+
+        else:
+            # Dense path (original code)
+            # Apply hard semantic cutoff if semantic matrix provided
+            if semantic_matrix is not None:
+                # Hard cutoff: if semantic similarity < threshold, block merging by setting IoU to 0
+                # This prevents semantically dissimilar boxes from merging even with high spatial overlap
+                semantic_mask = (
+                    semantic_matrix.cpu() >= self.semantic_threshold
+                )  # (N, N) bool
+                combined_matrix = iou_matrix * semantic_mask.float()
+
+                # Count how many pairs were blocked
+                total_pairs = (iou_matrix >= self.iou_threshold).sum().item()
+                blocked_pairs = (
+                    ((iou_matrix >= self.iou_threshold) & ~semantic_mask.cpu())
+                    .sum()
+                    .item()
+                )
+                print(
+                    f"  Semantic cutoff at {self.semantic_threshold:.2f}: blocked {blocked_pairs}/{total_pairs} potential merges"
+                )
+            else:
+                combined_matrix = iou_matrix
+
+            # Create adjacency matrix (combined similarity >= threshold indicates connection)
+            adjacency = (combined_matrix.cpu().numpy() >= self.iou_threshold).astype(
+                int
+            )
+            adjacency = csr_matrix(adjacency)
+
+        # Find connected components
+        n_components, labels = connected_components(csgraph=adjacency, directed=False)
+
+        # Group detections by component
+        clusters: list[list[int]] = [[] for _ in range(n_components)]
+        for idx, label in enumerate(labels):
+            clusters[label].append(idx)
+
+        # Filter out empty clusters
+        clusters = [c for c in clusters if len(c) > 0]
+
+        print(f"Found {len(clusters)} clusters from similarity graph")
+
+        return clusters
+
+    def _fuse_clusters(
+        self, detections: ObbTW, clusters: list[list[int]]
+    ) -> list[FusedInstance]:
+        """
+        Fuse detections within each cluster into single instances.
+
+        Uses confidence-weighted averaging for pose (7 DoF) and size.
+        Accounts for 90-degree rotation symmetry by aligning box dimensions.
+
+        Args:
+            detections: All detections (N, 165)
+            clusters: List of clusters (each is list of detection indices)
+
+        Returns:
+            List of fused instances
+        """
+        instances = []
+
+        for cluster in clusters:
+            cluster_detections = detections[cluster]  # (M, 165)
+
+            # Extract sizes and yaw angles
+            extents = cluster_detections.bb3_object  # (M, 6)
+            sizex = extents[:, 1] - extents[:, 0]  # (M,)
+            sizey = extents[:, 3] - extents[:, 2]  # (M,)
+            sizez = extents[:, 5] - extents[:, 4]  # (M,)
+            sizes = torch.stack([sizex, sizey, sizez], dim=1)  # (M, 3)
+
+            # Get yaw angles from poses
+            poses = cluster_detections.T_world_object  # List of M PoseTW
+            eulers = poses.to_euler()  # (M, 3)
+            yaw_angles = eulers[:, 2]  # (M,)
+
+            # STEP 1: Align boxes to canonical orientation (accounts for 90° rotations)
+            # Use base confidence weights for alignment reference
+            base_confidences = cluster_detections.prob.squeeze()  # (M,)
+            base_weights = base_confidences / (base_confidences.sum() + 1e-8)
+
+            aligned_sizes, aligned_yaws = self._align_boxes_r90(
+                sizes, yaw_angles, base_weights
+            )
+
+            # STEP 2: Compute weights based on ALIGNED sizes/yaws (for robust mode)
+            # This ensures outlier detection happens after 90° alignment
+            weights = self._compute_fusion_weights_with_alignment(
+                cluster_detections, aligned_sizes, aligned_yaws
+            )
+
+            # STEP 3: Fuse aligned sizes (weighted average)
+            weights_sizes = weights.view(-1, 1).expand_as(aligned_sizes)
+            fused_sizes = (aligned_sizes * weights_sizes).sum(dim=0)  # (3,)
+            bb3_object = torch.stack(
+                [
+                    -fused_sizes[0] / 2,
+                    fused_sizes[0] / 2,
+                    -fused_sizes[1] / 2,
+                    fused_sizes[1] / 2,
+                    -fused_sizes[2] / 2,
+                    fused_sizes[2] / 2,
+                ]
+            )
+
+            # STEP 4: Fuse aligned yaw angles (weighted average with 180° symmetry)
+            mean_yaw, _ = self._weighted_yaw_mean(aligned_yaws, weights)
+
+            # Create fused pose with aligned yaw
+            # Fuse translations (same as before)
+            translations = torch.stack([pose.t for pose in poses])  # (M, 3)
+            weights_t = weights.view(-1, 1).expand_as(translations)
+            fused_translation = (translations * weights_t).sum(dim=0)  # (3,)
+
+            # Create fused rotation with mean yaw
+            new_eulers = torch.tensor([0, 0, mean_yaw]).to(fused_translation)  # (3,)
+            new_eulers = new_eulers.reshape(1, 3)  # (1, 3)
+            fused_rotation = rotation_from_euler(new_eulers)[0]
+            fused_pose = PoseTW.from_Rt(fused_rotation, fused_translation)
+
+            # Fuse confidence (weighted average)
+            probs = cluster_detections.prob  # (M, 1)
+            weights_prob = weights.view(-1, 1)
+            fused_prob = (probs * weights_prob).sum(dim=0)  # (1,)
+
+            # Take most common text label.
+            all_text_labels = cluster_detections.text_string()
+            text_label = max(set(all_text_labels), key=all_text_labels.count)
+            text_padded = string2tensor(pad_string(text_label, max_len=128))
+
+            # Take most common semantic label.
+            all_semantic_labels = cluster_detections.sem_id
+            sem_id = all_semantic_labels[all_semantic_labels.argsort()[-1]]
+
+            # Create fused ObbTW from pose and size
+            fused_obb = ObbTW.from_lmc(
+                bb3_object=bb3_object,
+                prob=fused_prob.unsqueeze(0),  # (1, 1)
+                T_world_object=fused_pose,
+                text=text_padded,
+                sem_id=sem_id,
+            )
+
+            instances.append(
+                FusedInstance(
+                    obb=fused_obb,
+                    support_count=len(cluster),
+                    detection_indices=cluster,
+                )
+            )
+
+        return instances
+
+    def _fuse_poses(self, poses: list[PoseTW], weights: torch.Tensor) -> PoseTW:
+        """
+        Fuse poses using weighted averaging of translations and rotations.
+        Accounts for 180-degree yaw symmetry by aligning rotations before averaging.
+
+        Args:
+            poses: List of M PoseTW objects
+            weights: (M,) tensor of fusion weights
+
+        Returns:
+            Fused PoseTW
+        """
+
+        if isinstance(poses, list):
+            poses = torch.stack(poses)  # (M, 7)
+
+        # Extract translations and rotations
+        translations = torch.stack([pose.t for pose in poses])  # (M, 3)
+
+        # Fuse translations (weighted average)
+        weights_t = weights.view(-1, 1).expand_as(translations)
+        fused_translation = (translations * weights_t).sum(dim=0)  # (3,)
+
+        # Assert rotations have only yaw component.
+        eulers = poses.to_euler()
+        assert torch.allclose(eulers[:, 0], eulers[:, 1]), "Rotations must be pure yaw"
+
+        yaw_angles = eulers[:, 2]  # (M,)
+
+        # Compute weighted mean of yaw angles
+        mean_yaw_angle, _ = self._weighted_yaw_mean(yaw_angles, weights)
+
+        # Create fused rotation matrix
+        new_eulers = torch.tensor([0, 0, mean_yaw_angle]).to(translations)  # (3,)
+        new_eulers = new_eulers.reshape(1, 3)  # (1, 3)
+        fused_rotation = rotation_from_euler(new_eulers)[0]
+        fused_pose = PoseTW.from_Rt(fused_rotation, fused_translation)
+
+        return fused_pose
+
+    def _weighted_yaw_mean(
+        self, angles: torch.Tensor, weights: torch.Tensor, eps: float = 1e-8
+    ):
+        """Weighted mean of 1D rotations with 180-degree symmetry (pi-periodic)."""
+        return weighted_yaw_mean(angles, weights, eps)
+
+    def _align_boxes_r90(
+        self,
+        sizes: torch.Tensor,
+        yaw_angles: torch.Tensor,
+        weights: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Align boxes to canonical orientation accounting for 90-degree rotation symmetry."""
+        return align_boxes_r90(sizes, yaw_angles, weights)
+
+    def _angular_distance(self, angle1: float, angle2: float) -> float:
+        """Compute smallest angular distance between two angles accounting for 180-degree symmetry."""
+        return angular_distance(angle1, angle2)
+
+    def _compute_fusion_weights_with_alignment(
+        self,
+        detections: ObbTW,
+        aligned_sizes: torch.Tensor,
+        aligned_yaws: torch.Tensor,
+    ) -> torch.Tensor:
+        """
+        Compute weights based on ALIGNED sizes and yaws for robust mode.
+
+        This ensures outlier detection happens AFTER 90° alignment, preventing
+        valid boxes with swapped dimensions from being incorrectly marked as outliers.
+
+        Args:
+            detections: Original detections (for positions and confidence)
+            aligned_sizes: (M, 3) tensor of aligned sizes
+            aligned_yaws: (M,) tensor of aligned yaw angles
+
+        Returns:
+            Torch tensor of weights (sums to 1)
+        """
+        confidences = detections.prob.squeeze()  # (M,)
+
+        if self.confidence_weighting == "uniform":
+            weights = torch.ones_like(confidences)
+        elif self.confidence_weighting == "linear":
+            weights = confidences
+        elif self.confidence_weighting == "quadratic":
+            weights = confidences**2
+        elif self.confidence_weighting == "robust":
+            # RANSAC-like robust weighting using ALIGNED data
+            weights = self._compute_robust_weights_aligned(
+                detections, aligned_sizes, aligned_yaws, confidences
+            )
+        else:
+            raise ValueError(
+                f"Unknown confidence weighting: {self.confidence_weighting}"
+            )
+
+        # Normalize to sum to 1
+        weights = weights / (weights.sum() + 1e-8)
+
+        return weights
+
+    def _compute_robust_weights_aligned(
+        self,
+        detections: ObbTW,
+        aligned_sizes: torch.Tensor,
+        aligned_yaws: torch.Tensor,
+        confidences: torch.Tensor,
+    ) -> torch.Tensor:
+        """
+        Compute robust weights using ALIGNED sizes and yaws.
+
+        This fixes the bug where boxes with 90° rotation differences were
+        incorrectly marked as outliers before alignment.
+
+        Args:
+            detections: ObbTW detections in cluster (M, 165)
+            aligned_sizes: (M, 3) tensor of aligned sizes
+            aligned_yaws: (M,) tensor of aligned yaw angles
+            confidences: Base confidence scores (M,)
+
+        Returns:
+            Robust weights (M,) that down-weight outliers
+        """
+        M = len(detections)
+        if M <= 2:
+            # Not enough data for robust statistics, use confidence only
+            return confidences
+
+        # Extract positions (alignment doesn't affect positions)
+        poses = detections.T_world_object
+        translations = torch.stack([pose.t for pose in poses])  # (M, 3)
+
+        # Use ALIGNED sizes and yaws for outlier detection
+        sizes = aligned_sizes  # (M, 3)
+        yaw_angles = aligned_yaws  # (M,)
+
+        # Compute robust statistics using median
+        median_position = torch.median(translations, dim=0).values  # (3,)
+        median_size = torch.median(sizes, dim=0).values  # (3,)
+
+        # For yaw: use circular mean with 180° symmetry
+        mean_yaw, _ = self._weighted_yaw_mean(yaw_angles, torch.ones_like(yaw_angles))
+
+        # Compute deviations
+        position_deviations = torch.norm(translations - median_position, dim=1)  # (M,)
+        size_deviations = torch.norm(sizes - median_size, dim=1)  # (M,)
+
+        # Yaw deviations accounting for 180° symmetry
+        yaw_deviations = torch.tensor(
+            [self._angular_distance(yaw.item(), mean_yaw.item()) for yaw in yaw_angles],
+            device=yaw_angles.device,
+        )
+
+        # Compute MAD (Median Absolute Deviation) for robust outlier detection
+        mad_position = torch.median(position_deviations)
+        mad_size = torch.median(size_deviations)
+        mad_yaw = torch.median(yaw_deviations)
+
+        # Avoid division by zero
+        mad_position = max(mad_position, 1e-6)
+        mad_size = max(mad_size, 1e-6)
+        mad_yaw = max(mad_yaw, 1e-6)
+
+        # Normalized deviations (similar to z-scores but robust)
+        # Scale factor 1.4826 makes MAD consistent with std for normal distribution
+        scale = 1.4826
+        normalized_position = position_deviations / (scale * mad_position)
+        normalized_size = size_deviations / (scale * mad_size)
+        normalized_yaw = yaw_deviations / (scale * mad_yaw)
+
+        # Combined outlier score (higher = more likely to be outlier)
+        outlier_score = (normalized_position + normalized_size + normalized_yaw) / 3.0
+
+        # Convert outlier score to weights using Huber-like function
+        # Detections with outlier_score > threshold are down-weighted
+        threshold = 2.5  # Similar to 2.5 sigma in normal distribution
+        inlier_weights = torch.where(
+            outlier_score <= threshold,
+            torch.ones_like(outlier_score),  # Inliers get full weight
+            threshold / outlier_score,  # Outliers get reduced weight
+        )
+
+        # Combine with original confidence scores
+        robust_weights = confidences * inlier_weights
+
+        return robust_weights
+
+    def _apply_nms_to_fused(
+        self,
+        instances: list[FusedInstance],
+    ) -> list[FusedInstance]:
+        """Apply NMS to fused boxes to remove redundant instances based on IoU only.
+
+        Args:
+            instances: List of fused instances
+
+        Returns:
+            Filtered list of instances after NMS
+        """
+        return apply_nms_to_fused_instances(instances, self.nms_iou_threshold)
+
+    def _compute_fusion_weights(self, detections: ObbTW) -> torch.Tensor:
+        """
+        Compute weights for fusing detections based on confidence.
+
+        Args:
+            detections: ObbTW detections to fuse (M, 165)
+
+        Returns:
+            Torch tensor of weights (sums to 1)
+        """
+        confidences = detections.prob.squeeze()  # (M,)
+
+        if self.confidence_weighting == "uniform":
+            weights = torch.ones_like(confidences)
+        elif self.confidence_weighting == "linear":
+            weights = confidences
+        elif self.confidence_weighting == "quadratic":
+            weights = confidences**2
+        elif self.confidence_weighting == "robust":
+            # RANSAC-like robust weighting: down-weight outliers
+            weights = self._compute_robust_weights(detections, confidences)
+        else:
+            raise ValueError(
+                f"Unknown confidence weighting: {self.confidence_weighting}"
+            )
+
+        # Normalize to sum to 1
+        weights = weights / (weights.sum() + 1e-8)
+
+        return weights
+
+    def _compute_robust_weights(
+        self, detections: ObbTW, confidences: torch.Tensor
+    ) -> torch.Tensor:
+        """
+        Compute robust weights using RANSAC-like outlier detection.
+
+        Down-weights detections that are outliers based on:
+        1. Position deviation from cluster median
+        2. Size deviation from cluster median
+        3. Yaw angle deviation from cluster consensus
+
+        Uses Median Absolute Deviation (MAD) for robust outlier detection.
+
+        Args:
+            detections: ObbTW detections in cluster (M, 165)
+            confidences: Base confidence scores (M,)
+
+        Returns:
+            Robust weights (M,) that down-weight outliers
+        """
+        M = len(detections)
+        if M <= 2:
+            # Not enough data for robust statistics, use confidence only
+            return confidences
+
+        # Extract positions, sizes, and yaw angles
+        poses = detections.T_world_object
+        translations = torch.stack([pose.t for pose in poses])  # (M, 3)
+
+        extents = detections.bb3_object  # (M, 6)
+        sizex = extents[:, 1] - extents[:, 0]
+        sizey = extents[:, 3] - extents[:, 2]
+        sizez = extents[:, 5] - extents[:, 4]
+        sizes = torch.stack([sizex, sizey, sizez], dim=1)  # (M, 3)
+
+        eulers = poses.to_euler()  # (M, 3)
+        yaw_angles = eulers[:, 2]  # (M,)
+
+        # Compute robust statistics using median
+        median_position = torch.median(translations, dim=0).values  # (3,)
+        median_size = torch.median(sizes, dim=0).values  # (3,)
+
+        # For yaw: use circular mean with 180° symmetry
+        mean_yaw, _ = self._weighted_yaw_mean(yaw_angles, torch.ones_like(yaw_angles))
+
+        # Compute deviations
+        position_deviations = torch.norm(translations - median_position, dim=1)  # (M,)
+        size_deviations = torch.norm(sizes - median_size, dim=1)  # (M,)
+
+        # Yaw deviations accounting for 180° symmetry
+        yaw_deviations = torch.tensor(
+            [self._angular_distance(yaw.item(), mean_yaw.item()) for yaw in yaw_angles],
+            device=yaw_angles.device,
+        )
+
+        # Compute MAD (Median Absolute Deviation) for robust outlier detection
+        mad_position = torch.median(position_deviations)
+        mad_size = torch.median(size_deviations)
+        mad_yaw = torch.median(yaw_deviations)
+
+        # Avoid division by zero
+        mad_position = max(mad_position, 1e-6)
+        mad_size = max(mad_size, 1e-6)
+        mad_yaw = max(mad_yaw, 1e-6)
+
+        # Normalized deviations (similar to z-scores but robust)
+        # Scale factor 1.4826 makes MAD consistent with std for normal distribution
+        scale = 1.4826
+        normalized_position = position_deviations / (scale * mad_position)
+        normalized_size = size_deviations / (scale * mad_size)
+        normalized_yaw = yaw_deviations / (scale * mad_yaw)
+
+        # Combined outlier score (higher = more likely to be outlier)
+        outlier_score = (normalized_position + normalized_size + normalized_yaw) / 3.0
+
+        # Convert outlier score to weights using Huber-like function
+        # Detections with outlier_score > threshold are down-weighted
+        threshold = 2.5  # Similar to 2.5 sigma in normal distribution
+        inlier_weights = torch.where(
+            outlier_score <= threshold,
+            torch.ones_like(outlier_score),  # Inliers get full weight
+            threshold / outlier_score,  # Outliers get reduced weight
+        )
+
+        # Combine with original confidence scores
+        robust_weights = confidences * inlier_weights
+
+        return robust_weights
+
+
+def apply_nms_to_fused_instances(
+    instances: list[FusedInstance],
+    nms_iou_threshold: float = 0.6,
+) -> list[FusedInstance]:
+    """Apply NMS to fused instances to remove redundant boxes based on IoU.
+
+    This is a standalone function that can be used to apply NMS to a list of
+    fused instances outside of the BoundingBox3DFuser class.
+
+    Args:
+        instances: List of fused instances
+        nms_iou_threshold: IoU threshold for NMS (boxes with IoU > this are redundant)
+
+    Returns:
+        Filtered list of instances after NMS
+    """
+    if len(instances) <= 1:
+        return instances
+
+    # Compute pairwise IoU for all fused boxes
+    fused_obbs = torch.stack([inst.obb for inst in instances])
+    if torch.cuda.is_available():
+        fused_obbs = fused_obbs.to("cuda")
+    elif torch.backends.mps.is_available():
+        fused_obbs = fused_obbs.to("mps")
+
+    # Sample more accurately here.
+    iou_matrix = iou_mc7(fused_obbs, fused_obbs, samp_per_dim=32, verbose=False).cpu()
+
+    # Greedily remove instances with high IoU overlap
+    keep_mask = torch.ones(len(instances), dtype=torch.bool)
+    for i in range(len(instances)):
+        if not keep_mask[i]:
+            continue
+        for j in range(i + 1, len(instances)):
+            if not keep_mask[j]:
+                continue
+            if iou_matrix[i, j] > nms_iou_threshold:
+                # Get class names for debug output
+                class_i = instances[i].obb.text_string()[0]
+                class_j = instances[j].obb.text_string()[0]
+
+                # Remove instance with lower support count
+                if instances[i].support_count >= instances[j].support_count:
+                    keep_mask[j] = False
+                    print(
+                        f"  Removing instance {j} '{class_j}' (support={instances[j].support_count}, IoU={iou_matrix[i, j].item():.3f}) "
+                        f"in favor of {i} '{class_i}' (support={instances[i].support_count})"
+                    )
+                else:
+                    keep_mask[i] = False
+                    print(
+                        f"  Removing instance {i} '{class_i}' (support={instances[i].support_count}, IoU={iou_matrix[i, j].item():.3f}) "
+                        f"in favor of {j} '{class_j}' (support={instances[j].support_count})"
+                    )
+                    break
+
+    filtered = [inst for idx, inst in enumerate(instances) if keep_mask[idx]]
+    print(f"  NMS: Removed {len(instances) - len(filtered)} redundant instances")
+    return filtered
+
+
+def fuse_obbs_from_csv(
+    input_path: str,
+    output_path: Optional[str] = None,
+    iou_threshold: float = 0.3,
+    min_detections: int = 4,
+    conf_threshold: float = 0.55,
+) -> list[FusedInstance]:
+    """
+    Load OBBs from a CSV file, fuse them, and save the results.
+
+    Args:
+        input_path: Path to input obb.csv file
+        output_path: Path to output obb_fused.csv file (default: input with _fused suffix)
+        iou_threshold: IoU threshold for 3D box fusion
+        min_detections: Minimum number of detections required to create an instance
+        conf_threshold: Minimum confidence threshold to filter detections
+
+    Returns:
+        List of fused instances
+    """
+    # Determine output path
+    if output_path is None:
+        base, ext = os.path.splitext(input_path)
+        output_path = f"{base}_fused{ext}"
+
+    print(f"==> Loading OBBs from {input_path}")
+    timed_obbs = read_obb_csv(input_path)
+
+    if len(timed_obbs) == 0:
+        print("==> No OBBs found in input file, nothing to fuse")
+        return []
+
+    # Concatenate all OBBs from all timestamps
+    all_obbs_list = list(timed_obbs.values())
+    all_obbs = torch.cat(all_obbs_list, dim=0)
+    print(f"==> Loaded {all_obbs.shape[0]} OBBs from {len(timed_obbs)} timestamps")
+
+    # Create fuser and run fusion
+    print(f"\n{'=' * 60}")
+    print(f"FUSING {all_obbs.shape[0]} OBBs")
+    print(f"{'=' * 60}")
+
+    fuser = BoundingBox3DFuser(
+        iou_threshold=iou_threshold,
+        min_detections=min_detections,
+        conf_threshold=conf_threshold,
+    )
+    fused_instances = fuser.fuse(all_obbs)
+    print(f"==> Fused into {len(fused_instances)} static instances")
+
+    if len(fused_instances) == 0:
+        print("==> No fused instances produced, skipping output")
+        return []
+
+    # Extract OBBs from fused instances
+    fused_obbs = torch.stack([inst.obb for inst in fused_instances], dim=0)
+
+    # Round prob to 2 decimal places to avoid floating point artifacts in CSV
+    rounded_prob = torch.round(fused_obbs.prob * 100) / 100
+    fused_obbs.set_prob(rounded_prob.squeeze(-1), use_mask=False)
+
+    # Build sem_id_to_name mapping from the fused OBBs
+    sem_id_to_name = {}
+    for obb in fused_obbs:
+        sem_id = int(obb.sem_id.item())
+        if sem_id not in sem_id_to_name:
+            text = unpad_string(tensor2string(obb.text.int()))
+        else:
+            text = sem_id_to_name[sem_id]
+        sem_id_to_name[sem_id] = text
+
+    # Write fused OBBs with timestamp 0 (static map)
+    writer = ObbCsvWriter2(output_path)
+    writer.write(fused_obbs, timestamps_ns=0, sem_id_to_name=sem_id_to_name)
+    writer.close()
+    print(f"==> Saved {len(fused_instances)} fused OBBs to {output_path}")
+
+    return fused_instances
+
+
+def main() -> None:
+    """Fuse OBBs from a CSV file into static instances."""
+    parser = argparse.ArgumentParser(
+        description="Fuse 3D bounding box detections from CSV into static instances"
+    )
+    parser.add_argument(
+        "--input",
+        type=str,
+        required=True,
+        help="Path to input obb.csv file",
+    )
+    parser.add_argument(
+        "--output",
+        type=str,
+        default=None,
+        help="Path to output obb_fused.csv file (default: input path with _fused suffix)",
+    )
+    parser.add_argument(
+        "--iou",
+        type=float,
+        default=0.3,
+        help="IoU threshold for 3D box fusion (default: 0.3)",
+    )
+    parser.add_argument(
+        "--min_detections",
+        type=int,
+        default=4,
+        help="Minimum number of detections required to create an instance (default: 4)",
+    )
+    parser.add_argument(
+        "--conf_threshold",
+        type=float,
+        default=0.55,
+        help="Minimum confidence threshold to filter detections (default: 0.55)",
+    )
+    args = parser.parse_args()
+
+    fuse_obbs_from_csv(
+        input_path=args.input,
+        output_path=args.output,
+        iou_threshold=args.iou,
+        min_detections=args.min_detections,
+        conf_threshold=args.conf_threshold,
+    )
+
+
+def _create_example_detections() -> ObbTW:
+    """Create example ObbTW detections for testing using make_obb."""
+    obbs_list = []
+
+    # Group 1: Three similar "chair" detections with slight position noise
+    # All at roughly the same location with small random offsets
+    for _ in range(3):
+        noise_x = torch.randn(1).item() * 0.1
+        noise_y = torch.randn(1).item() * 0.1
+        noise_z = torch.randn(1).item() * 0.05
+        noise_yaw = torch.randn(1).item() * 1
+
+        obb = make_obb(
+            sz=[1.0, 0.3, 1.0],
+            position=[0.5 + noise_x, 0.5 + noise_y, 0.5 + noise_z],
+            prob=0.5 + torch.rand(1).item() * 0.15,
+            yaw=0.1 + noise_yaw,
+        )
+        obbs_list.append(obb)
+
+    for _ in range(8):
+        noise_x = torch.randn(1).item() * 0.1
+        noise_y = torch.randn(1).item() * 0.3
+        noise_z = torch.randn(1).item() * 0.05
+        noise_yaw = torch.randn(1).item() * 2
+
+        noise_sx = torch.randn(1).item() * 0.1
+        noise_sy = torch.randn(1).item() * 0.1
+        noise_sz = torch.randn(1).item() * 0.1
+
+        obb = make_obb(
+            sz=[2.2 + noise_sx, 1.0 + noise_sy, 1.0 + noise_sz],
+            position=[-0.5 + noise_x, -0.5 + noise_y, -0.5 + noise_z],
+            prob=0.2 + torch.rand(1).item() * 0.15,
+            yaw=2.0 + noise_yaw,
+        )
+        obbs_list.append(obb)
+
+    for _ in range(20):
+        noise_x = torch.randn(1).item() * 0.2
+        noise_y = torch.randn(1).item() * 0.1
+        noise_z = torch.randn(1).item() * 0.05
+        noise_yaw = torch.randn(1).item() * 0.1
+
+        noise_sx = torch.randn(1).item() * 0.1
+        noise_sy = torch.randn(1).item() * 0.1
+        noise_sz = torch.randn(1).item() * 0.1
+
+        obb = make_obb(
+            sz=[1.0 + noise_sx, 2.0 + noise_sy, 1.0 + noise_sz],
+            position=[-2.5 + noise_x, 2.5 + noise_y, -0.0 + noise_z],
+            prob=0.4 + torch.rand(1).item() * 0.3,
+            yaw=5.0 + noise_yaw,
+        )
+        obbs_list.append(obb)
+
+    # Group 2: One "table" detection (different location)
+    obb = make_obb(
+        sz=[1.5, 1.5, 0.8],
+        position=[5.0, 0.5, 0.4],
+        prob=0.5,
+        yaw=1.2,
+    )
+    obbs_list.append(obb)
+
+    all_obbs = torch.stack(obbs_list)
+    return all_obbs
+
+
+if __name__ == "__main__":
+    main()
