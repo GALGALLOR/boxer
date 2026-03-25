@@ -61,6 +61,9 @@ pip install torch torchvision
 pip install opencv-python tqdm
 pip install sentence-transformers   # for semantic track merging
 
+# 3D interactive viewer (optional, for --viz_3d)
+pip install moderngl moderngl-window imgui[glfw] pyrr
+
 # 2D detectors (install at least one)
 pip install transformers            # for OWLv2 (default)
 pip install detic                   # for DETIC (alternative)

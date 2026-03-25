@@ -64,6 +64,76 @@ TAB20 = [
     (0.090, 0.745, 0.812), (0.620, 0.855, 0.898),
 ]
 
+def detect_frame(datum, det2d, boxernet, text_labels, sem_name_to_id, sem_id_to_name,
+                  thresh2d, thresh3d, detector_type, device, no_sdp=False):
+    """Run 2D detection + 3D BoxerNet on a single frame datum.
+
+    Returns: (obb_pr_w: ObbTW, time_ns: int) or (None, time_ns) if no detections.
+    """
+    time_ns = int(datum["time_ns0"])
+    img_torch = datum["img0"]
+
+    if no_sdp:
+        datum["sdp_w"] = torch.zeros(0, 3)
+
+    # 2D detection
+    img_torch_255 = img_torch.clone() * 255.0
+    rotated = datum["rotated0"]
+    bb2d, scores2d, label_ints, _ = det2d.forward(
+        img_torch_255,
+        rotated.item(),
+        resize_to_HW=(800, 800),
+    )
+    if detector_type == "detic":
+        labels2d = list(label_ints)
+    else:
+        labels2d = [text_labels[label_int] for label_int in label_ints]
+
+    if bb2d.shape[0] == 0:
+        return (None, time_ns)
+
+    # 3D BoxerNet
+    datum["bb2d"] = bb2d
+    if device == "mps":
+        outputs = boxernet.forward(datum)
+    else:
+        with torch.autocast(device_type=device, dtype=torch.float32):
+            outputs = boxernet.forward(datum)
+    obb_pr_w = outputs["obbs_pr_w"].cpu()[0]
+
+    # Set semantic IDs from 2D labels
+    assert len(obb_pr_w) == len(labels2d)
+    sem_ids = torch.zeros(len(labels2d), dtype=torch.int32)
+    for i in range(len(labels2d)):
+        label = labels2d[i]
+        if label in sem_name_to_id:
+            sem_ids[i] = sem_name_to_id[label]
+        else:
+            new_id = len(sem_name_to_id)
+            sem_name_to_id[label] = new_id
+            sem_id_to_name[new_id] = label
+            sem_ids[i] = new_id
+    obb_pr_w.set_sem_id(sem_ids)
+
+    # Filter by 3D confidence
+    scores3d = obb_pr_w.prob.squeeze(-1).clone()
+    keepers = obb_pr_w.prob.squeeze(-1) >= thresh3d
+    obb_pr_w = obb_pr_w[keepers].clone()
+    scores3d = scores3d[keepers].clone()
+    labels3d = [labels2d[i] for i in range(len(labels2d)) if keepers[i]]
+    mean_scores = (scores2d[keepers] + scores3d) / 2.0
+    obb_pr_w.set_prob(mean_scores)
+
+    # Set text labels
+    if len(labels3d) > 0:
+        text_data = torch.stack(
+            [string2tensor(pad_string(lab, max_len=128)) for lab in labels3d]
+        )
+        obb_pr_w.set_text(text_data)
+
+    return (obb_pr_w, time_ns)
+
+
 def comma_separated_list(value):
     # Handle empty string gracefully
     if not value:
@@ -123,6 +193,11 @@ def main():
     else:
         dataset_type = "aria"
         remote_root = handle_input(expand_seq_shorthand(args.input))
+        # Resolve bare sequence names to ~/boxy_data/<name>
+        if not os.path.isabs(remote_root) and not os.path.exists(remote_root):
+            resolved = os.path.expanduser(os.path.join("~/boxy_data", remote_root))
+            if os.path.exists(resolved):
+                remote_root = resolved
         seq_name = remote_root.rstrip("/").split("/")[-1]
 
     # get name of containing directory
@@ -312,6 +387,20 @@ def main():
     else:
         sem_name_to_id = {label: i for i, label in enumerate(text_labels)}
         sem_id_to_name = {v: k for k, v in sem_name_to_id.items()}
+
+    # Online mode: skip batch loop, launch viewer with detect_fn
+    if args.viz_3d and not args.cache3d:
+        def _make_detect_fn(det2d_model, boxernet_model, text_labels, sem_name_to_id, sem_id_to_name, args, device):
+            def detect_fn(datum):
+                return detect_frame(datum, det2d_model, boxernet_model, text_labels,
+                                    sem_name_to_id, sem_id_to_name,
+                                    args.thresh2d, args.thresh3d, args.detector, device, args.no_sdp)
+            return detect_fn
+        detect_fn = _make_detect_fn(det2d, boxernet, text_labels, sem_name_to_id, sem_id_to_name, args, device)
+        online_writer = ObbCsvWriter2(csv_path)
+        _launch_3d_viewer(args, loader, dataset_type, seq_name, log_dir, csv_path, csv2d_out_path,
+                          detect_fn=detect_fn, loader_iter=iter(loader), writer=online_writer)
+        return
 
     writer = ObbCsvWriter2(csv_path)
 
@@ -790,7 +879,8 @@ def _build_seq_ctx(loader, dataset_type):
         return None
 
 
-def _launch_3d_viewer(args, loader, dataset_type, seq_name, log_dir, csv_path, csv2d_out_path):
+def _launch_3d_viewer(args, loader, dataset_type, seq_name, log_dir, csv_path, csv2d_out_path,
+                      detect_fn=None, loader_iter=None, writer=None):
     """Launch interactive 3D viewer after pipeline completes."""
     import sys
     saved_argv = sys.argv.copy()
@@ -799,7 +889,11 @@ def _launch_3d_viewer(args, loader, dataset_type, seq_name, log_dir, csv_path, c
     from utils.viz_boxer import TrackerViewer
     import moderngl_window as mglw
 
-    timed_obbs = read_obb_csv(csv_path)
+    if detect_fn is not None:
+        # Online mode: start with empty timed_obbs
+        timed_obbs = {}
+    else:
+        timed_obbs = read_obb_csv(csv_path)
     seq_ctx = _build_seq_ctx(loader, dataset_type) if loader is not None else None
 
     bb2d_csv_path = csv2d_out_path if os.path.exists(csv2d_out_path) else ""
@@ -813,6 +907,9 @@ def _launch_3d_viewer(args, loader, dataset_type, seq_name, log_dir, csv_path, c
                 seq_ctx=seq_ctx,
                 bb2d_csv_path=bb2d_csv_path,
                 freeze_tracker=not args.track,
+                detect_fn=detect_fn,
+                loader_iter=loader_iter,
+                writer=writer,
                 **kw,
             )
             if not args.track:

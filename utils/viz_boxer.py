@@ -43,7 +43,7 @@ from tw.obb import BB3D_LINE_ORDERS, ObbTW
 from utils.orbit_viewer import OrbitViewer
 from tw.pose import PoseTW
 from utils.taxonomy import BOXY_SEM2NAME, SSI_COLORS_ALT, TEXT2COLORS
-from utils.tensor_utils import find_nearest2
+from utils.tensor_utils import find_nearest2, tensor2string, unpad_string
 from utils.track_3d_boxes import BoundingBox3DTracker
 from utils.video import make_mp4
 
@@ -774,7 +774,7 @@ class OBBViewer(OrbitViewer):
         if getattr(self, "color_mode", None) == COLOR_MODE_RANDOM:
             if hasattr(self, "_build_geometry_cache"):
                 self._build_geometry_cache()
-            if getattr(self, "tracked_all_instances", None):
+            if getattr(self, "tracked_all_instances", None) and hasattr(self.tracked_all_instances[0], "obb"):
                 self._build_tracked_all_geometry()
             self._rgb_tracked_all_color_cache = None
             if hasattr(self, "_rebuild_rgb_projections"):
@@ -3064,6 +3064,9 @@ class TrackerViewer(OBBViewer):
         scannet_annotation_path: str = "~/data/scannet/full_annotations.json",
         seq_ctx: dict | None = None,
         freeze_tracker: bool = False,
+        detect_fn=None,
+        loader_iter=None,
+        writer=None,
         **kwargs: Any,
     ) -> None:
         """Initialize tracker viewer.
@@ -3075,12 +3078,24 @@ class TrackerViewer(OBBViewer):
             seq_ctx: Pre-built sequence context dict. When provided, skips
                 _load_sequence_context_auto() and uses this context directly.
             freeze_tracker: If True, don't run tracker updates (fuse mode).
+            detect_fn: Callable that takes a datum and returns (ObbTW, time_ns) or (None, time_ns).
+            loader_iter: Iterator over data loader for online detection.
+            writer: ObbCsvWriter2 for writing detections as they are computed.
         """
+        self._detect_fn = detect_fn
+        self._loader_iter = loader_iter
+        self._writer = writer
+        self._next_unprocessed_idx = 0
+        self._online_mode = detect_fn is not None
         self._prebuilt_seq_ctx = seq_ctx
         t_init0 = time_module.perf_counter()
         _startup_log("TrackerViewer init start")
         self.timed_obbs = timed_obbs
-        self.sorted_timestamps = sorted(timed_obbs.keys())
+        if self._online_mode:
+            # Online mode: precompute the timestamps the loader will actually yield
+            self.sorted_timestamps = self._precompute_loader_timestamps(seq_ctx)
+        else:
+            self.sorted_timestamps = sorted(timed_obbs.keys())
         self.total_frames = len(self.sorted_timestamps)
         if self.total_frames >= 2:
             deltas_ns = [
@@ -3358,7 +3373,7 @@ class TrackerViewer(OBBViewer):
         self._iou_matrix_m = 0
         self._iou_matrix_n = 0
 
-        # Track color mode: 0=Confidence (viridis colormap), 1=Boxy (semantic class colors)
+        # Track color mode: 0=Confidence (jet colormap), 1=Boxy (semantic class colors)
         # Keep Health as default to avoid expensive text-model startup on launch.
         self.track_color_mode = 0
         if init_color_mode is not None:
@@ -3395,7 +3410,7 @@ class TrackerViewer(OBBViewer):
 
         # Get initial OBBs: all frames when frozen (fuse mode), first frame otherwise
         self._all_frames_obbs = None  # cached stacked OBBs for fuse mode
-        if self.total_frames > 0:
+        if self.total_frames > 0 and not self._online_mode:
             if self.freeze_tracker:
                 all_obbs_list = []
                 for ts in self.sorted_timestamps:
@@ -3911,6 +3926,71 @@ class TrackerViewer(OBBViewer):
                 [(self.obs_point_vbo, "3f 3f", "in_position", "in_color")],
             )
 
+    @staticmethod
+    def _precompute_loader_timestamps(seq_ctx):
+        """Get timestamps for frames the loader will actually yield.
+
+        Uses the AriaLoader's index/skip_n/max_n/end_index to query VRS
+        timestamps for each frame that will be produced by __next__().
+        Falls back to rgb_timestamps from seq_ctx if loader doesn't support this.
+        """
+        if seq_ctx is None:
+            return []
+        loader = seq_ctx.get("loader", None)
+        if loader is None:
+            return sorted(seq_ctx["rgb_timestamps"].tolist())
+
+        # AriaLoader: compute exact timestamps for each frame the iterator will yield
+        if hasattr(loader, "provider") and hasattr(loader, "stream_id") and hasattr(loader, "index"):
+            timestamps = []
+            stream_id = loader.stream_id[0]
+            idx = loader.index
+            count = 0
+            while idx <= loader.end_index and count < loader.max_n:
+                try:
+                    _, record = loader.provider.get_image_data_by_index(stream_id, idx)
+                    timestamps.append(record.capture_timestamp_ns)
+                except Exception:
+                    pass
+                idx += loader.skip_n
+                count += 1
+            if len(timestamps) > 0:
+                return timestamps
+
+        return sorted(seq_ctx["rgb_timestamps"].tolist())
+
+    def _detect_next_frame(self):
+        """Load next frame from iterator, run detection, store in timed_obbs."""
+        if self._loader_iter is None:
+            return
+        try:
+            datum = next(self._loader_iter)
+        except StopIteration:
+            return
+        if datum is False:
+            self._next_unprocessed_idx += 1
+            return
+
+        result = self._detect_fn(datum)
+        obb_pr_w, time_ns = result
+
+        if obb_pr_w is not None and len(obb_pr_w) > 0:
+            self.timed_obbs[time_ns] = obb_pr_w
+        else:
+            self.timed_obbs[time_ns] = ObbTW(torch.zeros(0, 165))
+
+        if self._writer is not None:
+            sem_id_to_name = {}
+            if obb_pr_w is not None and len(obb_pr_w) > 0:
+                for obb in obb_pr_w:
+                    sid = int(obb.sem_id.item())
+                    if sid not in sem_id_to_name:
+                        sem_id_to_name[sid] = unpad_string(tensor2string(obb.text.int()))
+            self._writer.write(obb_pr_w if obb_pr_w is not None else ObbTW(torch.zeros(0, 165)),
+                               time_ns, sem_id_to_name=sem_id_to_name)
+
+        self._next_unprocessed_idx += 1
+
     def _step_to_frame(self, target_idx: int) -> None:
         """Advance tracker to the target frame index.
 
@@ -3928,12 +4008,19 @@ class TrackerViewer(OBBViewer):
         if target_idx >= self.total_frames:
             target_idx = self.total_frames - 1
 
+        # Online detection: process frames up to target
+        if self._online_mode and target_idx >= self._next_unprocessed_idx:
+            for _ in range(self._next_unprocessed_idx, target_idx + 1):
+                self._detect_next_frame()
+
         if self.freeze_tracker:
             # Skip tracker updates — just move the frame pointer
             pass
         elif target_idx == self.current_frame_idx + 1:
             ts = self.sorted_timestamps[target_idx]
-            detections = self._filter_frame_obbs(self.timed_obbs[ts])
+            detections = self._filter_frame_obbs(
+                self.timed_obbs.get(ts, ObbTW(torch.zeros(0, 165)))
+            )
             cam, T_wr = self._get_cam_and_pose(ts)
             obs_pts = self._get_observed_points_trail(
                 ts, trail_duration_ns=int(self.obs_trail_secs * 1e9)
@@ -3949,7 +4036,9 @@ class TrackerViewer(OBBViewer):
             # Jump: reset tracker and start fresh from target frame
             self._reset_tracker()
             ts = self.sorted_timestamps[target_idx]
-            detections = self._filter_frame_obbs(self.timed_obbs[ts])
+            detections = self._filter_frame_obbs(
+                self.timed_obbs.get(ts, ObbTW(torch.zeros(0, 165)))
+            )
             cam, T_wr = self._get_cam_and_pose(ts)
             obs_pts = self._get_observed_points_trail(
                 ts, trail_duration_ns=int(self.obs_trail_secs * 1e9)
@@ -4163,7 +4252,9 @@ class TrackerViewer(OBBViewer):
         # Get current frame detections
         ts = self.sorted_timestamps[self.current_frame_idx]
         nav_ts = self._get_navigation_timestamp(self.current_frame_idx, ts)
-        current_detections = self._filter_frame_obbs(self.timed_obbs[ts])
+        current_detections = self._filter_frame_obbs(
+            self.timed_obbs.get(ts, ObbTW(torch.zeros(0, 165)))
+        )
         tracked_all_obbs = self._empty_obbs_like(current_detections)
         tracked_visible_obbs = self._empty_obbs_like(current_detections)
 
@@ -4448,7 +4539,7 @@ class TrackerViewer(OBBViewer):
                 shown_track_obbs = torch.stack([t.obb for t in shown_tracks])
                 t_colors = self._obbs_random_colors(shown_track_obbs).cpu()
             else:  # Health (default)
-                health_colors_rgba = cm.viridis(np.array(health_scores))[
+                health_colors_rgba = cm.jet(np.array(health_scores))[
                     :, :3
                 ]  # (M, 3)
                 t_colors = torch.from_numpy(health_colors_rgba.astype(np.float32))
@@ -5208,7 +5299,7 @@ class TrackerViewer(OBBViewer):
         imgui.text_disabled("(?)")
         if imgui.is_item_hovered():
             imgui.begin_tooltip()
-            imgui.text("Confidence mode uses viridis colormap:")
+            imgui.text("Confidence mode uses jet colormap:")
             imgui.text("low confidence = purple/blue")
             imgui.text("high confidence = green/yellow")
             imgui.end_tooltip()
