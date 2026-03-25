@@ -1,9 +1,9 @@
 # pyre-unsafe
 from typing import Optional, Tuple, Union
 
+import cv2
 import numpy as np
 import torch
-from torchvision.io import read_image
 
 from .pose import get_T_rot_z, IdentityPose, PoseTW
 from .tensor_wrapper import autocast, autoinit, smart_cat, TensorWrapper
@@ -771,7 +771,8 @@ def vignette_image(cam="rgb"):
         os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "calibration"
     )
     local_path = os.path.join(calib_dir, filenames[cam])
-    img = read_image(local_path)
+    img = cv2.imread(local_path, cv2.IMREAD_UNCHANGED)
+    img = torch.from_numpy(img).permute(2, 0, 1)  # HWC→CHW
     return img
 
 

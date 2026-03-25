@@ -16,7 +16,7 @@ from typing import Dict, List, Optional, Union
 import cv2
 import numpy as np
 import torch
-import torchvision
+import torch.nn.functional as F
 from PIL import Image
 from tw.camera import CameraTW
 from tw.obb import ObbTW
@@ -1910,11 +1910,7 @@ def rescale_img_cam(img, cam, target_h, target_w):
     # Resize image.
     hw_after = int(round(target_h)), int(round(target_w))
     if isinstance(img, torch.Tensor):
-        img = torchvision.transforms.functional.resize(
-            img,
-            hw_after,
-            interpolation=torchvision.transforms.InterpolationMode.BILINEAR,
-        )
+        img = F.interpolate(img.unsqueeze(0), size=hw_after, mode="bilinear", align_corners=False).squeeze(0)
     elif isinstance(img, np.ndarray):
         img = cv2.resize(img, (hw_after[1], hw_after[0]), interpolation=cv2.INTER_AREA)
     else:

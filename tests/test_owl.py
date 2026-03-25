@@ -198,7 +198,7 @@ class TestOwlWrapperStandalone(unittest.TestCase):
         try:
             with self.assertRaises(FileNotFoundError) as ctx:
                 OwlWrapper("cpu", text_prompts=["test"])
-            self.assertIn("export_owl.py", str(ctx.exception))
+            self.assertIn("README", str(ctx.exception))
         finally:
             ow._CKPT_PATH = original
 

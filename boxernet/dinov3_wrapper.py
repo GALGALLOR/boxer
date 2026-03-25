@@ -26,7 +26,6 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 import torch.nn.init
-import torchvision.transforms.functional as TF
 from utils.settings import CKPT_PATH
 from torch import nn, Tensor
 
@@ -1802,7 +1801,9 @@ class DinoV3Wrapper(torch.nn.Module):
         std = (0.229, 0.224, 0.225)
 
         with torch.inference_mode():
-            img_norm = TF.normalize(img, mean=mean, std=std)
+            mean_t = torch.tensor(mean, device=img.device, dtype=img.dtype).view(1, 3, 1, 1)
+            std_t = torch.tensor(std, device=img.device, dtype=img.dtype).view(1, 3, 1, 1)
+            img_norm = (img - mean_t) / std_t
             feats = self.model.get_intermediate_layers(
                 img_norm,
                 reshape=True,

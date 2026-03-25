@@ -195,10 +195,10 @@ def precompute_semantic_embeddings(
         device: Device to use for computation ("cuda", "mps", or "cpu"). If None, auto-detects.
 
     Returns:
-        Tensor of shape (N, 384) with normalized embeddings
+        Tensor of shape (N, embed_dim) with normalized embeddings
     """
     if len(obbs) == 0:
-        return torch.empty(0, 384)
+        return torch.empty(0, 512)
 
     print(f"\n{'=' * 60}")
     print("PRECOMPUTING SEMANTIC EMBEDDINGS")
@@ -248,22 +248,22 @@ def precompute_semantic_embeddings(
 
     # Initialize model
     try:
-        from utils.condense_text import SentenceTransformerWrapper
+        from utils.condense_text import TextEmbedder
     except ImportError:
         raise ImportError("condense_text module not available")
 
-    model = SentenceTransformerWrapper()
+    model = TextEmbedder()
 
     # Compute embeddings only for unique texts
     import time
 
     start_time = time.time()
-    unique_embeddings = model.forward(unique_texts)  # (unique_count, 384)
+    unique_embeddings = model.forward(unique_texts)  # (unique_count, embed_dim)
     elapsed_time = time.time() - start_time
 
     # Expand embeddings back to full size using indices
     text_indices_tensor = torch.tensor(text_indices, dtype=torch.long)
-    embeddings = unique_embeddings[text_indices_tensor]  # (total_count, 384)
+    embeddings = unique_embeddings[text_indices_tensor]  # (total_count, embed_dim)
 
     print(f"\n✓ Computed {unique_count} unique embeddings in {elapsed_time:.2f}s")
     print(f"✓ Expanded to {total_count} total embeddings")

@@ -57,17 +57,13 @@ The pipeline supports optional **3D tracking** (`--track`) for temporal consiste
 conda create -n boxer python=3.12
 conda activate boxer
 
-pip install torch torchvision
-pip install opencv-python tqdm
-pip install sentence-transformers   # for semantic track merging
+pip install torch opencv-python tqdm
+
+# Aria data (optional, for Project Aria sequences)
+pip install projectaria-tools
 
 # 3D interactive viewer (optional, for --viz_3d)
 pip install moderngl moderngl-window imgui[glfw] pyrr
-
-# 2D detector: export OWLv2 checkpoint (one-time, requires transformers)
-pip install transformers
-python detectors/export_owl.py      # saves to ~/data/boxer/owlv2-base-patch16-ensemble.pt
-pip uninstall transformers           # optional: no longer needed at runtime
 
 ```
 
@@ -154,8 +150,7 @@ boxer/
 │   └── dinov3_wrapper.py     # DINOv3 backbone wrapper
 ├── detectors/
 │   ├── owl_wrapper.py        # OWLv2 open-vocabulary detector (JIT-traced, no transformers needed)
-│   ├── clip_tokenizer.py     # Minimal CLIP BPE tokenizer
-│   └── export_owl.py         # One-time export script (requires transformers)
+│   └── clip_tokenizer.py     # Minimal CLIP BPE tokenizer
 ├── loaders/
 │   ├── base_loader.py        # Base loader interface
 │   ├── aria_loader.py        # Aria glasses data loader
@@ -179,7 +174,7 @@ boxer/
     ├── video.py              # Video I/O utilities
     ├── image.py              # Image utilities
     ├── file_io.py            # CSV I/O for OBBs and calibration
-    ├── condense_text.py      # Sentence-transformer wrapper for semantic matching
+    ├── condense_text.py      # Text embedder for semantic matching (uses OWLv2 CLIP encoder)
     ├── taxonomy.py           # Label taxonomy definitions
     ├── settings.py           # Global settings and constants
     ├── demo_utils.py         # Demo helper functions

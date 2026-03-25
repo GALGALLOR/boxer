@@ -348,12 +348,12 @@ class BoundingBox3DTracker:
         if text not in self._embedding_cache:
             if self._embed_model is None:
                 try:
-                    from utils.condense_text import SentenceTransformerWrapper
+                    from utils.condense_text import TextEmbedder
                 except ImportError:
                     raise ImportError("condense_text module not available")
 
-                self._embed_model = SentenceTransformerWrapper()
-            self._embedding_cache[text] = self._embed_model.forward([text])[0]  # (384,)
+                self._embed_model = TextEmbedder()
+            self._embedding_cache[text] = self._embed_model.forward([text])[0]  # (embed_dim,)
         return self._embedding_cache[text]
 
     def _update_track(

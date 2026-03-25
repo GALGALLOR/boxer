@@ -765,7 +765,7 @@ def main():
             track_writer.close()
             print(f"==> Saved {len(active_tracks)} tracked OBBs to {track_output_path}")
 
-    if args.viz_3d:
+    if args.viz_gui:
         _launch_3d_viewer(args, loader, dataset_type, seq_name, log_dir, csv_path, csv2d_out_path)
 
 

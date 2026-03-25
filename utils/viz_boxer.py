@@ -1550,9 +1550,9 @@ class OBBViewer(OrbitViewer):
         embeddings = self._get_semantic_embeddings(self.all_obbs)
 
         # Encode BOXY_SEM2NAME values using a local model instance
-        from utils.condense_text import SentenceTransformerWrapper
+        from utils.condense_text import TextEmbedder
 
-        model = SentenceTransformerWrapper()
+        model = TextEmbedder()
 
         # Build lists from BOXY_SEM2NAME (skip Invalid sem_id -1)
         sem_id_list = [sem_id for sem_id in BOXY_SEM2NAME.keys() if sem_id >= 0]
@@ -4086,15 +4086,15 @@ class TrackerViewer(OBBViewer):
 
     @staticmethod
     def _init_boxy_ref_data() -> dict:
-        """Load sentence transformer model and precompute reference embeddings."""
-        from utils.condense_text import SentenceTransformerWrapper
+        """Load text embedder and precompute reference embeddings."""
+        from utils.condense_text import TextEmbedder
         from utils.taxonomy import (
             BOXY_SEM2NAME,
             SSI_COLORS_ALT,
             TEXT2COLORS,
         )
 
-        model = SentenceTransformerWrapper()
+        model = TextEmbedder()
         sem_id_list = [sid for sid in BOXY_SEM2NAME if sid >= 0]
         name_list = [BOXY_SEM2NAME[sid] for sid in sem_id_list]
         boxy_embs = model.forward(name_list)

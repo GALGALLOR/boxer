@@ -9,6 +9,74 @@ from utils.taxonomy import load_text_labels
 
 DEFAULT_TEXT_LABELS = load_text_labels("lvisplus")
 
+
+class VisionDetectorWrapper(torch.nn.Module):
+    """Wraps OWLv2 vision encoder + detection heads.
+
+    Takes pixel_values + pre-computed text embeddings, returns logits and pred_boxes.
+
+    NOTE: We inline the vision model sub-components (embeddings, pre_layernorm,
+    encoder) instead of calling vision_model.forward() directly. This avoids
+    HuggingFace's internal `pixel_values.to(expected_input_dtype)` cast getting
+    baked into the JIT trace as a hardcoded float32 cast, which would prevent
+    bfloat16 from working at inference time via torch.autocast.
+    """
+
+    def __init__(self, model):
+        super().__init__()
+        self.embeddings = model.owlv2.vision_model.embeddings
+        self.pre_layernorm = model.owlv2.vision_model.pre_layernorm
+        self.encoder = model.owlv2.vision_model.encoder
+        self.post_layernorm = model.owlv2.vision_model.post_layernorm
+        self.layer_norm = model.layer_norm
+        self.class_head = model.class_head
+        self.box_head = model.box_head
+        self.sigmoid = model.sigmoid
+        # Pre-computed box bias for native resolution (no interpolation needed)
+        self.register_buffer("box_bias", model.box_bias.clone())
+
+    def forward(
+        self,
+        pixel_values: torch.Tensor,
+        query_embeds: torch.Tensor,
+        query_mask: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        # Vision encoder (inlined to avoid baked-in dtype cast)
+        hidden_states = self.embeddings(pixel_values)
+        hidden_states = self.pre_layernorm(hidden_states)
+        encoder_outputs = self.encoder(
+            inputs_embeds=hidden_states,
+            output_attentions=False,
+            output_hidden_states=False,
+            return_dict=False,
+        )
+        last_hidden_state = encoder_outputs[0]
+
+        # Post layernorm
+        image_embeds = self.post_layernorm(last_hidden_state)
+
+        # Merge CLS token with patch tokens
+        class_token_out = torch.broadcast_to(image_embeds[:, :1, :], image_embeds[:, :-1].shape)
+        image_embeds = image_embeds[:, 1:, :] * class_token_out
+        image_embeds = self.layer_norm(image_embeds)
+
+        # image_feats: [batch, num_patches, hidden_dim]
+        image_feats = image_embeds
+
+        # query_embeds: [num_queries, embed_dim] -> [1, num_queries, embed_dim]
+        query_embeds_batched = query_embeds.unsqueeze(0)
+        query_mask_batched = query_mask.unsqueeze(0)
+
+        # Class prediction
+        pred_logits, _ = self.class_head(image_feats, query_embeds_batched, query_mask_batched)
+
+        # Box prediction
+        pred_boxes = self.box_head(image_feats)
+        pred_boxes = pred_boxes + self.box_bias
+        pred_boxes = self.sigmoid(pred_boxes)
+
+        return pred_logits, pred_boxes
+
 _CKPT_PATH = os.path.expanduser("~/data/boxer/owlv2-base-patch16-ensemble.pt")
 
 
@@ -42,7 +110,7 @@ class OwlWrapper(torch.nn.Module):
         if not os.path.exists(_CKPT_PATH):
             raise FileNotFoundError(
                 f"OWLv2 checkpoint not found at {_CKPT_PATH}. "
-                "Run 'python detectors/export_owl.py' first (requires transformers)."
+                "See README for export instructions."
             )
         checkpoint = torch.load(_CKPT_PATH, map_location="cpu", weights_only=False)
 
@@ -63,7 +131,6 @@ class OwlWrapper(torch.nn.Module):
         # Load vision detector: nn.Module for bfloat16 (explicit casting),
         # JIT trace for float32 (no benefit from bfloat16 through JIT).
         if self.use_bfloat16 and "vision_detector_state_dict" in checkpoint:
-            from detectors.export_owl import VisionDetectorWrapper
             # Build nn.Module shell and load weights from state_dict
             # (no HuggingFace dependency — weights come from checkpoint)
             self.vision_detector = _load_vision_module(
@@ -217,7 +284,6 @@ def _load_vision_module(state_dict, config, device):
     in the checkpoint, loads the saved weights, and returns a ready-to-use module.
     """
     from transformers import Owlv2Config, Owlv2ForObjectDetection
-    from detectors.export_owl import VisionDetectorWrapper
 
     # Use the pretrained config to get correct image_size (960 vs default 768)
     owl_config = Owlv2Config.from_pretrained("google/owlv2-base-patch16-ensemble")
