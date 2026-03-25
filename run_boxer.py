@@ -348,7 +348,8 @@ def main():
     else:
         from detectors.owl_wrapper import OwlWrapper
         det2d = OwlWrapper(
-            device, text_prompts=text_labels, min_confidence=args.thresh2d
+            device, text_prompts=text_labels, min_confidence=args.thresh2d,
+            precision=args.precision,
         )
         method = "OWLv2"
 

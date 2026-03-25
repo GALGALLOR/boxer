@@ -44,11 +44,19 @@ class VisionDetectorWrapper(nn.Module):
     """Wraps OWLv2 vision encoder + detection heads.
 
     Takes pixel_values + pre-computed text embeddings, returns logits and pred_boxes.
+
+    NOTE: We inline the vision model sub-components (embeddings, pre_layernorm,
+    encoder) instead of calling vision_model.forward() directly. This avoids
+    HuggingFace's internal `pixel_values.to(expected_input_dtype)` cast getting
+    baked into the JIT trace as a hardcoded float32 cast, which would prevent
+    bfloat16 from working at inference time via torch.autocast.
     """
 
     def __init__(self, model):
         super().__init__()
-        self.vision_model = model.owlv2.vision_model
+        self.embeddings = model.owlv2.vision_model.embeddings
+        self.pre_layernorm = model.owlv2.vision_model.pre_layernorm
+        self.encoder = model.owlv2.vision_model.encoder
         self.post_layernorm = model.owlv2.vision_model.post_layernorm
         self.layer_norm = model.layer_norm
         self.class_head = model.class_head
@@ -63,9 +71,16 @@ class VisionDetectorWrapper(nn.Module):
         query_embeds: torch.Tensor,
         query_mask: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        # Vision encoder
-        vision_outputs = self.vision_model(pixel_values=pixel_values)
-        last_hidden_state = vision_outputs[0]
+        # Vision encoder (inlined to avoid baked-in dtype cast)
+        hidden_states = self.embeddings(pixel_values)
+        hidden_states = self.pre_layernorm(hidden_states)
+        encoder_outputs = self.encoder(
+            inputs_embeds=hidden_states,
+            output_attentions=False,
+            output_hidden_states=False,
+            return_dict=False,
+        )
+        last_hidden_state = encoder_outputs[0]
 
         # Post layernorm
         image_embeds = self.post_layernorm(last_hidden_state)
@@ -156,6 +171,7 @@ def export():
     checkpoint = {
         "text_encoder": _traced_to_bytes(traced_text),
         "vision_detector": _traced_to_bytes(traced_vision),
+        "vision_detector_state_dict": vision_detector.state_dict(),
         "config": config,
         "tokenizer_vocab": tokenizer_vocab,
         "tokenizer_merges": tokenizer_merges,
