@@ -35,4 +35,7 @@ After running `tests/run_tests.sh`, the HTML coverage report is at `tests/htmlco
 | `test_camera.py` | CameraTW project/unproject round-trips, fisheye projection, backward passes |
 | `test_iou.py` | Exact and sampling-based 3D IoU (iou_exact7, iou_mc9) |
 | `test_obb.py` | ObbTW construction, point containment, voxel grid sampling, batched IoU |
+| `test_gravity.py` | Gravity alignment and vector rejection utilities |
+| `test_pose.py` | PoseTW SE(3) pose and quaternion math |
 | `test_scipy_replacements.py` | Hungarian (linear sum assignment) and union-find connected components against scipy reference |
+| `test_tensor_wrapper.py` | TensorWrapper base class operations |

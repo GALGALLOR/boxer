@@ -6,10 +6,10 @@ import cv2
 import numpy as np
 import torch
 
-from .camera import CameraTW
+from tw.camera import CameraTW
 from .image import put_text
-from .obb import ObbTW
-from .pose import PoseTW
+from tw.obb import ObbTW
+from tw.pose import PoseTW
 from .tensor_utils import tensor2string, unpad_string
 
 AXIS_COLORS_RGB = {

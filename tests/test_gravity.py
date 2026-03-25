@@ -3,7 +3,7 @@ import unittest
 import numpy as np
 import torch
 from utils.gravity import gravity_align_T_world_cam, reject_vector_a_from_b
-from utils.pose import PoseTW
+from tw.pose import PoseTW
 
 
 class TestRejectVector(unittest.TestCase):

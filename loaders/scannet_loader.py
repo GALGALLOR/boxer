@@ -16,10 +16,10 @@ from typing import Optional
 import cv2
 import numpy as np
 import torch
-from utils.camera import CameraTW
-from utils.obb import ObbTW
+from tw.camera import CameraTW
+from tw.obb import ObbTW
 from loaders.omni_loader import corners_to_obb
-from utils.pose import PoseTW
+from tw.pose import PoseTW
 
 # ShapeNet category ID to human-readable name
 SHAPENET_CAT_MAP = {

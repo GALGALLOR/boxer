@@ -31,7 +31,7 @@ from pyrr import Matrix44
 from loaders.aria_loader import AriaLoader
 from loaders.ca_loader import CALoader
 from loaders.scannet_loader import ScanNetLoader
-from utils.camera import CameraTW
+from tw.camera import CameraTW
 from utils.file_io import (
     dump_obbs_adt,
     load_bb2d_csv,
@@ -39,9 +39,9 @@ from utils.file_io import (
     probe_gravity_direction,
     read_obb_csv,
 )
-from utils.obb import BB3D_LINE_ORDERS, ObbTW
+from tw.obb import BB3D_LINE_ORDERS, ObbTW
 from utils.orbit_viewer import OrbitViewer
-from utils.pose import PoseTW
+from tw.pose import PoseTW
 from utils.taxonomy import BOXY_SEM2NAME, SSI_COLORS_ALT, TEXT2COLORS
 from utils.tensor_utils import find_nearest2
 from utils.track_3d_boxes import BoundingBox3DTracker
@@ -1162,6 +1162,11 @@ class OBBViewer(OrbitViewer):
         if len(filtered_obbs) == 0:
             print("No detections above threshold to fuse")
             return
+
+        # Lazily compute embeddings if not precomputed (e.g. TrackerViewer with skip_precompute)
+        if self._semantic_embeddings is None and len(self.all_obbs) > 0:
+            from utils.fuse_3d_boxes import precompute_semantic_embeddings
+            self._semantic_embeddings = precompute_semantic_embeddings(self.all_obbs)
 
         # Get semantic embeddings from cache using indices
         semantic_embeddings = self._get_semantic_embeddings(
@@ -3058,6 +3063,7 @@ class TrackerViewer(OBBViewer):
         scannet_scene: str | None = None,
         scannet_annotation_path: str = "~/data/scannet/full_annotations.json",
         seq_ctx: dict | None = None,
+        freeze_tracker: bool = False,
         **kwargs: Any,
     ) -> None:
         """Initialize tracker viewer.
@@ -3068,6 +3074,7 @@ class TrackerViewer(OBBViewer):
             force_cpu: Force IoU computation on CPU
             seq_ctx: Pre-built sequence context dict. When provided, skips
                 _load_sequence_context_auto() and uses this context directly.
+            freeze_tracker: If True, don't run tracker updates (fuse mode).
         """
         self._prebuilt_seq_ctx = seq_ctx
         t_init0 = time_module.perf_counter()
@@ -3087,7 +3094,7 @@ class TrackerViewer(OBBViewer):
         # Playback state
         self.current_frame_idx = 0
         self.is_playing = False
-        self.freeze_tracker = False
+        self.freeze_tracker = freeze_tracker
         self.playback_fps = _infer_fps_from_timestamps_ns(
             np.array(self.sorted_timestamps, dtype=np.int64),
             fallback=10.0,
@@ -3386,10 +3393,17 @@ class TrackerViewer(OBBViewer):
         self._seek_dirty_time: Optional[float] = None
         self._seek_target_frame: int = 0
 
-        # Get first frame detections for initial display
+        # Get initial OBBs: all frames when frozen (fuse mode), first frame otherwise
+        self._all_frames_obbs = None  # cached stacked OBBs for fuse mode
         if self.total_frames > 0:
-            first_frame_obbs = self.timed_obbs[self.sorted_timestamps[0]]
-            all_obbs_for_init = first_frame_obbs
+            if self.freeze_tracker:
+                all_obbs_list = []
+                for ts in self.sorted_timestamps:
+                    all_obbs_list.extend(self.timed_obbs[ts])
+                self._all_frames_obbs = torch.stack(all_obbs_list) if all_obbs_list else ObbTW(torch.zeros(0, 165))
+                all_obbs_for_init = self._all_frames_obbs
+            else:
+                all_obbs_for_init = self.timed_obbs[self.sorted_timestamps[0]]
         else:
             all_obbs_for_init = ObbTW(torch.zeros(0, 165))
 
@@ -4323,17 +4337,24 @@ class TrackerViewer(OBBViewer):
         edge_indices = torch.tensor(BB3D_LINE_ORDERS, dtype=torch.long)  # (12, 2)
 
         # --- Build raw detection geometry (fast path) ---
+        # In fuse mode (freeze_tracker), show ALL raw detections across all frames
+        # instead of just the current frame's detections.
+        if self.freeze_tracker and self._all_frames_obbs is not None:
+            raw_obbs_for_render = self._all_frames_obbs
+        else:
+            raw_obbs_for_render = current_detections
+
         t0 = time_module.perf_counter()
         det_data = None
-        if len(current_detections) > 0:
-            N = len(current_detections)
-            corners = current_detections.bb3corners_world  # (N, 8, 3)
-            probs = current_detections.prob.squeeze(-1)  # (N,)
+        if len(raw_obbs_for_render) > 0:
+            N = len(raw_obbs_for_render)
+            corners = raw_obbs_for_render.bb3corners_world  # (N, 8, 3)
+            probs = raw_obbs_for_render.prob.squeeze(-1)  # (N,)
             if probs.dim() == 0:
                 probs = probs.unsqueeze(0)
 
-            # Use a fixed color (gray) for raw detections — no embeddings needed
-            colors = torch.full((N, 3), 0.6)  # gray
+            # Color raw detections by semantic class
+            colors = self._obbs_random_colors(raw_obbs_for_render).cpu()
 
             batch_idx = torch.arange(N)[:, None].expand(N, 12)
             start_pts = corners[batch_idx, edge_indices[:, 0][None, :].expand(N, 12)]

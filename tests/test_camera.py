@@ -13,7 +13,7 @@ import unittest
 import cv2
 import numpy as np
 import torch
-from utils.camera import (
+from tw.camera import (
     CameraTW,
     get_aria_camera,
     get_base_aria_rgb_camera,
@@ -270,7 +270,7 @@ class TestOmniLoaderProjection(unittest.TestCase):
         Call fisheye624_project directly to ensure TorchScript is actually invoked.
         This bypasses CameraTW and tests the raw JIT-compiled function.
         """
-        from utils.camera import fisheye624_project
+        from tw.camera import fisheye624_project
 
         # Shape from OmniLoader: [17, 120, 3] (17 OBBs x 120 edge points)
         B, N = 17, 120

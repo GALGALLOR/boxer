@@ -738,8 +738,8 @@ def _build_seq_ctx(loader, dataset_type):
             "uid_to_p3": None,
         }
     elif dataset_type == "scannet":
-        from utils.camera import CameraTW
-        from utils.pose import PoseTW
+        from tw.camera import CameraTW
+        from tw.pose import PoseTW
         frame_ids = list(loader.frame_ids)
         # Read first image to get dimensions
         first_fid = frame_ids[0]
@@ -812,10 +812,10 @@ def _launch_3d_viewer(args, loader, dataset_type, seq_name, log_dir, csv_path, c
                 root_path=log_dir,
                 seq_ctx=seq_ctx,
                 bb2d_csv_path=bb2d_csv_path,
+                freeze_tracker=not args.track,
                 **kw,
             )
             if not args.track:
-                self.freeze_tracker = True
                 self.show_raw_set = True
 
     try:

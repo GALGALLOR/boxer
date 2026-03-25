@@ -1,8 +1,8 @@
 import numpy as np
 import torch
 import torch.nn as nn
-from utils.obb import ObbTW
-from utils.pose import PoseTW, rotation_from_euler
+from tw.obb import ObbTW
+from tw.pose import PoseTW, rotation_from_euler
 
 
 class AleHead(torch.nn.Module):

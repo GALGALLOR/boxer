@@ -18,9 +18,9 @@ import numpy as np
 import torch
 import torchvision
 from PIL import Image
-from utils.camera import CameraTW
-from utils.obb import ObbTW
-from utils.pose import PoseTW
+from tw.camera import CameraTW
+from tw.obb import ObbTW
+from tw.pose import PoseTW
 from utils.taxonomy import (
     SSI_COLORS,
     SSI_NAME2SEM,
@@ -34,7 +34,7 @@ from utils.tensor_utils import (
     tensor2string,
     unpad_string,
 )
-from utils.pose import quat_to_rotmat, rotmat_to_quat
+from tw.pose import quat_to_rotmat, rotmat_to_quat
 from tqdm import tqdm
 
 # pyre-unsafe

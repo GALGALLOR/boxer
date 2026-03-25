@@ -4,8 +4,8 @@ import unittest
 
 import numpy as np
 import torch
-from utils.obb import make_obb, ObbTW, PAD_VAL, iou_mc9
-from utils.pose import PoseTW
+from tw.obb import make_obb, ObbTW, PAD_VAL, iou_mc9
+from tw.pose import PoseTW
 
 torch.set_printoptions(precision=5, sci_mode=False)
 

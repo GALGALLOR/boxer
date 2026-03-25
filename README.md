@@ -1,16 +1,34 @@
+# Overview
+Boxer lifts 2D object detections into static, global, fused 3D oriented bounding boxes (OBBs) from posed images and semi-dense point clouds, focused on indoor object detection.
+
+This repo contains the code and pre-trained model needed to run Boxer on a variety of input data sources (inference only code). 
+
+We provide examples for running on a variety of data sources:
+* Project Aria (Gen 1)
+* Project Aria (Gen 2)
+* CA-1M
+* ScanNet
+* SUN-RGBD (single view)
+
+# Input Requirements
+
+For single image lifting with BoxerNet, we require an image, intrinsics calibration (we tested with both Pinhole and Fisheye624 camera models), and the gravity direction. Depth is optional but improves performance significantly.
+
+For lifting a video sequence we need the same as above, but needs the full 6 DoF pose (as opposed to simply the gravity direction) to lift the 3DBBs into the world coordinate frame.
+
 # Boxer
 
-Boxer lifts 2D object detections into 3D oriented bounding boxes (OBBs) from posed images and semi-dense point clouds. Given a single RGB frame with camera intrinsics, an egomotion pose, and sparse depth, BoxerNet predicts a full 7-DoF 3D bounding box (position, size, yaw) for each 2D detection.
+Given a single RGB frame with camera intrinsics, an egomotion pose, and sparse depth, BoxerNet predicts a full 7-DoF 3D bounding box (position, size, yaw) for each 2D detection.
 
-## Architecture
+## BoxerNet Architecture
 
 ```
                         ┌─────────────┐
-   RGB Image ──────────►│   DINOv3     │──► patch features (fH×fW × 384)
+   RGB Image ──────────►│   DINOv3    │──► patch features (fH×fW × 384)
                         └─────────────┘          │
                                                  ├─ concat ──► input tokens
                         ┌─────────────┐          │
-   Semi-Dense Points ──►│  SDP→Patches │──► patch depths  (fH×fW × 1)
+   Semi-Dense Points ──►│ SDP Patches │──► patch depths  (fH×fW × 1)
                         └─────────────┘
 
    input tokens ──► [Self-Attention × N] ──► input encoding
@@ -137,21 +155,48 @@ boxer/
 │   ├── owl_wrapper.py        # OWLv2 open-vocabulary detector
 │   └── detic_wrapper.py      # DETIC detector
 ├── loaders/
+│   ├── base_loader.py        # Base loader interface
 │   ├── aria_loader.py        # Aria glasses data loader
 │   ├── ca_loader.py          # CA-1M dataset loader
 │   ├── omni_loader.py        # Omni3D dataset loader
 │   └── scannet_loader.py     # ScanNet dataset loader
+├── tests/                    # Unit tests (see tests/README.md)
+├── tw/                       # TensorWrapper types
+│   ├── tensor_wrapper.py     # TensorWrapper base class
+│   ├── camera.py             # CameraTW: camera intrinsics + projection
+│   ├── obb.py                # ObbTW tensor wrapper + IoU computation
+│   └── pose.py               # PoseTW: SE(3) poses + quaternion math
 └── utils/
-    ├── obb.py                # ObbTW tensor wrapper + IoU computation
-    ├── camera.py             # CameraTW: camera intrinsics + projection
-    ├── pose.py               # PoseTW: SE(3) poses + quaternion math
+    ├── tensor_utils.py       # Tensor manipulation helpers
+    ├── gravity.py            # Gravity alignment utilities
+    ├── hungarian.py          # Pure-Python Hungarian algorithm + connected components
     ├── track_3d_boxes.py     # Online 3D bounding box tracker
     ├── fuse_3d_boxes.py      # Post-hoc 3D box fusion
     ├── render.py             # 3D box rendering on images
+    ├── viz_boxer.py          # Boxer visualization pipeline
+    ├── video.py              # Video I/O utilities
+    ├── image.py              # Image utilities
     ├── file_io.py            # CSV I/O for OBBs and calibration
     ├── condense_text.py      # Sentence-transformer wrapper for semantic matching
-    └── ...
+    ├── taxonomy.py           # Label taxonomy definitions
+    ├── settings.py           # Global settings and constants
+    ├── demo_utils.py         # Demo helper functions
+    └── orbit_viewer.py       # Orbit-based 3D viewer
 ```
+
+## Tests
+
+See [tests/README.md](tests/README.md) for setup, running, and coverage details.
+
+## FAQ
+
+Q: Can I run it on an arbitrary image without any other info?
+A: Theoretically yes, but you would need to estimate the intrinsics and gravity direction. We didn't test that.
+
+Q: Do you plan to release the training or evaluation code?
+A: No, we do not, because that would require more long term maintenance from the authors. You can email the first author or leave a github issue if you have any questions about re-implementing these.
+
+
 
 ## License
 

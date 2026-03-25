@@ -9,9 +9,9 @@ import numpy as np
 import torch
 from PIL import Image
 from tqdm import tqdm
-from utils.camera import CameraTW, get_base_aria_rgb_camera
-from utils.obb import ObbTW
-from utils.pose import PoseTW
+from tw.camera import CameraTW, get_base_aria_rgb_camera
+from tw.obb import ObbTW
+from tw.pose import PoseTW
 from utils.tensor_utils import pad_string, string2tensor
 
 

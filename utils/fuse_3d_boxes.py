@@ -23,8 +23,8 @@ from typing import List, Optional
 
 import torch
 from utils.file_io import ObbCsvWriter2, read_obb_csv
-from utils.obb import make_obb, ObbTW, iou_mc7, iou_mc7_sparse
-from utils.pose import PoseTW, rotation_from_euler
+from tw.obb import make_obb, ObbTW, iou_mc7, iou_mc7_sparse
+from tw.pose import PoseTW, rotation_from_euler
 from utils.tensor_utils import (
     pad_string,
     string2tensor,

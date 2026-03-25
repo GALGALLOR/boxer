@@ -9,7 +9,7 @@ from torch import nn
 
 from boxernet.alehead import AleHead
 from boxernet.attention_utils import AttentionBlockV2
-from utils.camera import CameraTW
+from tw.camera import CameraTW
 from boxernet.dinov3_wrapper import (
     batch_dino,
     DINOV3_OUTPUT_DIM,
@@ -17,7 +17,7 @@ from boxernet.dinov3_wrapper import (
 )
 from utils.gravity import gravity_align_T_world_cam
 from utils.image import put_text, torch2cv2
-from utils.pose import PoseTW
+from tw.pose import PoseTW
 
 
 

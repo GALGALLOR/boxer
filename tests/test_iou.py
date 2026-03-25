@@ -3,7 +3,7 @@
 import unittest
 
 import torch
-from utils.obb import make_obb, iou_exact7, iou_mc9
+from tw.obb import make_obb, iou_exact7, iou_mc9
 
 
 class TestIouExact7(unittest.TestCase):
