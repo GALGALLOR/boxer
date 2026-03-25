@@ -153,7 +153,7 @@ def main():
     parser.add_argument("--detector_hw", type=int, default=800, help="resize images before going into 2D detector")
     parser.add_argument("--write_name", default="boxer", type=str, help="name prefix for outputs")
     parser.add_argument("--viz_headless", action="store_true", help="run OpenCV 2D panel visualization")
-    parser.add_argument("--viz_3d", action="store_true", help="launch interactive 3D viewer after pipeline")
+    parser.add_argument("--viz_gui", action="store_true", help="launch interactive 3D viewer after pipeline")
     parser.add_argument("--cache2d", action="store_true", help="load 2D BBs from CSV instead of running detector")
     parser.add_argument("--cache3d", action="store_true", help="load 3D BBs from CSV instead of running BoxerNet")
     parser.add_argument("--no_sdp", action="store_true", help="turn off SDP input")
@@ -170,7 +170,7 @@ def main():
         parser.error("--fuse and --track are mutually exclusive")
     if args.cache3d:
         args.cache2d = True
-    if args.viz_3d and not args.track and not args.fuse:
+    if args.viz_gui and not args.track and not args.fuse:
         args.fuse = True
     print(args)
     # fmt: on
@@ -216,7 +216,7 @@ def main():
             print(f"\n==> Running fusion on {csv_path}")
             fuse_obbs_from_csv(csv_path)
 
-        if args.viz_3d:
+        if args.viz_gui:
             _launch_3d_viewer(args, None, dataset_type, seq_name, log_dir, csv_path, csv2d_out_path)
         return
 
@@ -377,7 +377,7 @@ def main():
         sem_id_to_name = {v: k for k, v in sem_name_to_id.items()}
 
     # Online mode: skip batch loop, launch viewer with detect_fn
-    if args.viz_3d and not args.cache3d:
+    if args.viz_gui and not args.cache3d:
         def _make_detect_fn(det2d_model, boxernet_model, text_labels, sem_name_to_id, sem_id_to_name, args, device):
             def detect_fn(datum):
                 return detect_frame(datum, det2d_model, boxernet_model, text_labels,
@@ -573,7 +573,7 @@ def main():
         t_boxer = timer.stop("boxer")
 
         # Visualization (includes writing CSV and images)
-        timer.start("viz")
+        timer.start("csv")
         time_ns = int(datum["time_ns0"])
         writer.write(obb_pr_w, time_ns, sem_id_to_name=sem_id_to_name)
 
@@ -595,6 +595,7 @@ def main():
             if hasattr(loader, "device_name")
             else "unknown",
         )
+        t_csv = timer.stop("csv")
 
         active_tracks = None
         if tracker is not None:
@@ -605,6 +606,7 @@ def main():
             t_track = timer.stop("track")
 
         if args.viz_headless:
+            timer.start("viz")
             bb2_texts = [f"{l} {s:.2f}" for s, l in zip(scores2d, labels2d)]
             bb2_colors = [(np.array(jet_color(1.0 - s)) * 255).tolist() for s in scores2d]
             bb3_texts = [f"{l} {s:.2f}" for s, l in zip(scores3d, labels3d)]
@@ -701,12 +703,14 @@ def main():
             cv2.imwrite(out_path, final)
             out_path = os.path.join(log_dir, f"{args.write_name}_viz_current.png")
             cv2.imwrite(out_path, final)
-        t_viz = timer.stop("viz")
+            t_viz = timer.stop("viz")
 
         timing_str = f"load:{t_load:.0f}ms det2d:{t_det2d:.0f}ms boxer:{t_boxer:.0f}ms"
         if tracker is not None:
             timing_str += f" track:{t_track:.0f}ms"
-        timing_str += f" viz:{t_viz:.0f}ms"
+        timing_str += f" csv:{t_csv:.0f}ms"
+        if args.viz_headless:
+            timing_str += f" viz:{t_viz:.0f}ms"
         pbar.set_postfix_str(f"{len(bb2d)} 2D, {obb_pr_w.shape[0]} 3D | " + timing_str)
 
     if args.viz_headless:

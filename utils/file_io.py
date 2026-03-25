@@ -2257,44 +2257,48 @@ class ObbCsvWriter2:
         timestamps_ns: int = -1,
         sem_id_to_name: Optional[Dict[int, str]] = None,
     ):
-        # print(f"writing obbs at time {timestamps_ns}")
         # pyre-fixme[16]: `list` has no attribute `clone`.
         obb = obb_padded.remove_padding().clone().cpu()
         time_ns = str(int(timestamps_ns))
 
         N = obb.shape[0]
         if N == 0:
-            # write all -1 to indicate the obbs for this timestamp is missing
-            # null_row = [time_ns] + ["-1" for _ in range(self.num_cols - 1)]
-            # self.file_writer.write(",".join(null_row) + "\n")
             if self.verbose:
                 print(f"WARNING: no obbs at time {time_ns}")
             return
 
+        # Batch-extract all fields as numpy to avoid per-element tensor ops
         obbs_poses = obb.T_world_object
-        obbs_dims = obb.bb3_diagonal.numpy()
+        all_q = obbs_poses.q.numpy()       # (N, 4) - vectorized rotation_matrix_to_quaternion
+        all_t = obbs_poses.t.numpy()       # (N, 3)
+        obbs_dims = obb.bb3_diagonal.numpy()  # (N, 3)
         obb_sems = obb.sem_id.squeeze(-1).numpy()
         obb_inst = obb.inst_id.squeeze(-1).numpy()
         obb_prob = obb.prob.squeeze(-1).numpy()
+
+        # Batch-extract text labels
+        text_bytes = obb.text.byte().numpy()  # (N, 128)
+        names = []
         for i in range(N):
-            name = unpad_string(tensor2string(obb[i].text.byte()))
-            if name == "":
+            # Decode bytes to string, strip null padding and whitespace
+            raw = bytes(text_bytes[i]).rstrip(b"\x00").decode("ascii", errors="replace").strip()
+            if raw == "":
                 if sem_id_to_name and obb_sems[i] in sem_id_to_name:
-                    name = sem_id_to_name[obb_sems[i]]
+                    raw = sem_id_to_name[obb_sems[i]]
                 else:
-                    name = str(int(obb_sems[i]))
-            # convert any commas to spaces
-            name = name.replace(",", " ")
-            # convert to lowercase
-            name = name.lower()
-            qwxyz = obbs_poses[i].q  # torch.Tensor [4]
-            qwxyz = ",".join(qwxyz.numpy().astype(str))
-            txyz = obbs_poses[i].t  # torch.Tensor [3]
-            txyz = ",".join(txyz.numpy().astype(str))
-            sxyz = ",".join(obbs_dims[i].astype(str))
-            self.file_writer.write(
-                f"{time_ns},{txyz},{qwxyz},{sxyz},{name},{obb_inst[i]},{obb_sems[i]},{obb_prob[i]}\n"
+                    raw = str(int(obb_sems[i]))
+            names.append(raw.replace(",", " ").lower())
+
+        # Build all rows at once
+        lines = []
+        for i in range(N):
+            txyz = f"{all_t[i,0]},{all_t[i,1]},{all_t[i,2]}"
+            qwxyz = f"{all_q[i,0]},{all_q[i,1]},{all_q[i,2]},{all_q[i,3]}"
+            sxyz = f"{obbs_dims[i,0]},{obbs_dims[i,1]},{obbs_dims[i,2]}"
+            lines.append(
+                f"{time_ns},{txyz},{qwxyz},{sxyz},{names[i]},{obb_inst[i]},{obb_sems[i]},{obb_prob[i]}\n"
             )
+        self.file_writer.write("".join(lines))
         self.file_writer.flush()
         if self.verbose:
             print(f"===> ObbCsvWriter: wrote {N} rows to {self.file_name}")
