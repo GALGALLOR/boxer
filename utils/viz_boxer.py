@@ -1550,7 +1550,7 @@ class OBBViewer(OrbitViewer):
         embeddings = self._get_semantic_embeddings(self.all_obbs)
 
         # Encode BOXY_SEM2NAME values using a local model instance
-        from utils.condense_text import TextEmbedder
+        from detectors.clip_tokenizer import TextEmbedder
 
         model = TextEmbedder()
 
@@ -3424,6 +3424,10 @@ class TrackerViewer(OBBViewer):
 
         # Initialize parent — skip embedding precomputation and initial geometry build
         # since the tracker builds its own geometry per frame in _rebuild_current_view()
+        # Save online timestamps before super().__init__ overwrites them
+        _saved_sorted_timestamps = self.sorted_timestamps
+        _saved_total_frames = self.total_frames
+
         super().__init__(
             all_obbs=all_obbs_for_init,
             root_path=root_path,
@@ -3433,6 +3437,12 @@ class TrackerViewer(OBBViewer):
             seq_ctx=self._prebuilt_seq_ctx,
             **kwargs,
         )
+
+        # Restore online timestamps (parent's __init__ overwrites from empty timed_obbs)
+        if self._online_mode:
+            self.sorted_timestamps = _saved_sorted_timestamps
+            self.total_frames = _saved_total_frames
+
         _startup_log(
             f"TrackerViewer base init complete in {(time_module.perf_counter() - t_init0):.2f}s"
         )
@@ -4087,7 +4097,7 @@ class TrackerViewer(OBBViewer):
     @staticmethod
     def _init_boxy_ref_data() -> dict:
         """Load text embedder and precompute reference embeddings."""
-        from utils.condense_text import TextEmbedder
+        from detectors.clip_tokenizer import TextEmbedder
         from utils.taxonomy import (
             BOXY_SEM2NAME,
             SSI_COLORS_ALT,

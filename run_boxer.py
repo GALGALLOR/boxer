@@ -150,7 +150,7 @@ def main():
     parser.add_argument("--thresh2d", type=float, default=0.2, help="detection confidence for 2d detector")
     parser.add_argument("--thresh3d", type=float, default=0.5, help="detection confidence for boxer")
     parser.add_argument("--labels", type=comma_separated_list, nargs="?", const=[], default=["lvisplus"], help="Optional comma-separated list of text prompts (e.g. --labels=small or --labels=chair,table,lamp)")
-    parser.add_argument("--detector_hw", type=int, default=800, help="resize images before going into 2D detector")
+    parser.add_argument("--detector_hw", type=int, default=960, help="resize images before going into 2D detector")
     parser.add_argument("--write_name", default="boxer", type=str, help="name prefix for outputs")
     parser.add_argument("--viz_headless", action="store_true", help="run OpenCV 2D panel visualization")
     parser.add_argument("--viz_gui", action="store_true", help="launch interactive 3D viewer after pipeline")

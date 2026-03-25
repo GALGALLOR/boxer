@@ -348,7 +348,7 @@ class BoundingBox3DTracker:
         if text not in self._embedding_cache:
             if self._embed_model is None:
                 try:
-                    from utils.condense_text import TextEmbedder
+                    from detectors.clip_tokenizer import TextEmbedder
                 except ImportError:
                     raise ImportError("condense_text module not available")
 

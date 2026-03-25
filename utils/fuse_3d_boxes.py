@@ -248,7 +248,7 @@ def precompute_semantic_embeddings(
 
     # Initialize model
     try:
-        from utils.condense_text import TextEmbedder
+        from detectors.clip_tokenizer import TextEmbedder
     except ImportError:
         raise ImportError("condense_text module not available")
 

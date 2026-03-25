@@ -16,40 +16,10 @@ For single image lifting with BoxerNet, we require an image, intrinsics calibrat
 
 For lifting a video sequence we need the same as above, but needs the full 6 DoF pose (as opposed to simply the gravity direction) to lift the 3DBBs into the world coordinate frame.
 
-# Boxer
+# BoxerNet
 
-Given a single RGB frame with camera intrinsics, an egomotion pose, and sparse depth, BoxerNet predicts a full 7-DoF 3D bounding box (position, size, yaw) for each 2D detection.
+See [boxernet/BOXERNET.md](boxernet/BOXERNET.md) for architecture details.
 
-## BoxerNet Architecture
-
-```
-                        ┌─────────────┐
-   RGB Image ──────────►│   DINOv3    │──► patch features (fH×fW × 384)
-                        └─────────────┘          │
-                                                 ├─ concat ──► input tokens
-                        ┌─────────────┐          │
-   Semi-Dense Points ──►│ SDP Patches │──► patch depths  (fH×fW × 1)
-                        └─────────────┘
-
-   input tokens ──► [Self-Attention × N] ──► input encoding
-
-   2D Boxes (xmin, xmax, ymin, ymax) ──► query tokens
-                                              │
-                          ┌───────────────────┘
-                          ▼
-               [Cross-Attention × M]  (queries attend to input encoding)
-                          │
-                          ▼
-                     [AleHead MLP]  ──► 7-DoF OBB (dx, dy, dz, w, h, d, yaw)
-                                       + aleatoric uncertainty (log σ²)
-```
-
-**BoxerNet** (`boxernet/boxernet.py`) is a transformer that:
-1. **Encodes** the scene: DINOv3 visual features + semi-dense depth patches are projected to a shared embedding space, then refined with self-attention.
-2. **Queries** per detection: each 2D bounding box becomes a query token that cross-attends to the scene encoding.
-3. **Predicts** 3D boxes: an MLP head outputs a 7-DoF oriented bounding box (center offset, dimensions, yaw) plus an aleatoric uncertainty estimate.
-
-The pipeline supports optional **3D tracking** (`--track`) for temporal consistency and **3D fusion** (`--fuse`) for merging detections across frames.
 
 ## Installation
 
@@ -79,9 +49,15 @@ mkdir -p ~/data/boxer
 
 ## Usage
 
+The pipeline supports optional **online 3D tracking** (`--track`) for temporal consistency and **offline 3D fusion** (`--fuse`) for merging detections across frames after all detections have been made.
+
 ```bash
+
 # Basic: run on an Aria sequence with OWLv2 detector
-python run_boxer.py --input /path/to/aria/sequence
+python run_boxer.py --input /path/to/aria/sequence 
+
+# Add visualization with opencv which works without a display
+python run_boxer.py --input /path/to/aria/sequence --viz_headless
 
 # Custom text prompts
 python run_boxer.py --input /path/to/sequence --labels=chair,table,lamp
@@ -131,7 +107,7 @@ Results are written to `~/viz_boxer/<sequence_name>/`:
 | `--precision` | `float32` | Inference precision (`float32` or `bfloat16`) |
 | `--camera` | `rgb` | Aria camera stream (`rgb`, `slaml`, `slamr`) |
 | `--pinhole` | off | Rectify fisheye to pinhole |
-| `--detector_hw` | `800` | Resize for 2D detector |
+| `--detector_hw` | `960` | Resize for 2D detector |
 | `--ckpt` | see code | Path to BoxerNet checkpoint |
 | `--output_dir` | `~/viz_boxer` | Output directory |
 | `--gt2d` | off | Use ground-truth 2D boxes as input |
@@ -157,7 +133,7 @@ boxer/
 │   ├── ca_loader.py          # CA-1M dataset loader
 │   ├── omni_loader.py        # Omni3D dataset loader
 │   └── scannet_loader.py     # ScanNet dataset loader
-├── tests/                    # Unit tests (see tests/README.md)
+├── tests/                    # Unit tests (see tests/TESTING.md)
 ├── tw/                       # TensorWrapper types
 │   ├── tensor_wrapper.py     # TensorWrapper base class
 │   ├── camera.py             # CameraTW: camera intrinsics + projection
@@ -183,7 +159,7 @@ boxer/
 
 ## Tests
 
-See [tests/README.md](tests/README.md) for setup, running, and coverage details.
+See [tests/TESTING.md](tests/TESTING.md) for setup, running, and coverage details.
 
 ## FAQ
 

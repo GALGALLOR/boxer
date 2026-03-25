@@ -203,5 +203,49 @@ class TestOwlWrapperStandalone(unittest.TestCase):
             ow._CKPT_PATH = original
 
 
+class TestTextEmbedder(unittest.TestCase):
+    """Tests for the CLIP text embedder."""
+
+    @classmethod
+    def setUpClass(cls):
+        from detectors.clip_tokenizer import TextEmbedder
+
+        cls.embedder = TextEmbedder()
+
+    def test_output_shape(self):
+        """Verify output shape is (N, 512)."""
+        embeds = self.embedder.forward(["chair", "table"])
+        self.assertEqual(embeds.shape, (2, 512))
+
+    def test_normalized(self):
+        """Verify embeddings are L2-normalized."""
+        embeds = self.embedder.forward(["chair", "table", "lamp"])
+        norms = embeds.norm(dim=-1)
+        self.assertTrue(torch.allclose(norms, torch.ones_like(norms), atol=1e-5))
+
+    def test_semantic_similarity(self):
+        """Verify semantically similar labels have higher cosine similarity."""
+        embeds = self.embedder.forward(["sofa", "couch", "refrigerator"])
+        sim = embeds @ embeds.T
+        # sofa-couch should be more similar than sofa-refrigerator
+        self.assertGreater(sim[0, 1].item(), sim[0, 2].item())
+
+    def test_deterministic(self):
+        """Verify same input gives same output."""
+        e1 = self.embedder.forward(["chair"])
+        e2 = self.embedder.forward(["chair"])
+        self.assertTrue(torch.allclose(e1, e2))
+
+    @unittest.skipUnless(_has_transformers(), "transformers not installed")
+    def test_matches_owl_wrapper_embeddings(self):
+        """Verify TextEmbedder produces same embeddings as OwlWrapper's text encoder."""
+        prompts = ["chair", "table", "lamp", "a photo of a dog"]
+        wrapper = OwlWrapper("cpu", text_prompts=prompts, min_confidence=0.1)
+        owl_embeds = torch.nn.functional.normalize(wrapper.text_embeddings, dim=-1)
+        our_embeds = self.embedder.forward(prompts)
+        max_diff = (owl_embeds - our_embeds).abs().max().item()
+        self.assertLess(max_diff, 1e-5, f"Embedding max diff {max_diff:.2e}")
+
+
 if __name__ == "__main__":
     unittest.main()
