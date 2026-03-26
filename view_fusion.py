@@ -7,7 +7,8 @@ import argparse
 import os
 
 import torch
-from view_boxer import launch_viewer, read_obb_csv, resolve_input, subsample_timed_obbs
+from utils.viewer import launch_viewer, resolve_input, subsample_timed_obbs, OBBViewer
+from utils.file_io import read_obb_csv
 from utils.demo_utils import EVAL_PATH
 from utils.demo_utils import DEFAULT_SEQ
 
@@ -67,8 +68,6 @@ def main():
     default_w, default_h = 1400, 900
     init_w = args.window_w if args.window_w > 0 else default_w
     init_h = args.window_h if args.window_h > 0 else default_h
-
-    from utils.viz_boxer import OBBViewer
 
     class Viewer(OBBViewer):
         window_size = (init_w, init_h)

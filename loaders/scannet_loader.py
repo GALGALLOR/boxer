@@ -11,6 +11,7 @@ and yields datums in the same format as OmniLoader for use with viz_omni3d.py.
 
 import json
 import os
+import time
 from typing import Optional
 
 import cv2
@@ -105,10 +106,13 @@ class ScanNetLoader(BaseLoader):
         max_frames: Optional[int] = None,
         start_frame: int = 1,
     ):
-        # Allow short scene names like "scene0000_00" → ~/data/scannet/scene0000_00
+        # Allow short scene names like "scene0000_00" → sample_data/ or ~/data/scannet/
         scene_dir = os.path.expanduser(scene_dir)
         if not os.path.isabs(scene_dir) and not os.path.exists(scene_dir):
-            scene_dir = os.path.expanduser(f"~/data/scannet/{scene_dir}")
+            from utils.demo_utils import SAMPLE_DATA_PATH
+            sample = os.path.join(SAMPLE_DATA_PATH, scene_dir)
+            legacy = os.path.expanduser(f"~/data/scannet/{scene_dir}")
+            scene_dir = sample if os.path.exists(sample) else legacy
         self.scene_dir = scene_dir
         self.skip_frames = skip_frames
         self.resize = None  # Will be set by BoxerNetWrapper
@@ -292,8 +296,11 @@ class ScanNetLoader(BaseLoader):
 
         frame_id = self.frame_ids[self.index]
         datum = {}
+        _debug = os.environ.get("DEBUG_VIZ", "0") == "1"
 
         # Load color image
+        if _debug:
+            _t0 = time.perf_counter()
         color_path = os.path.join(self.scene_dir, "frames", "color", f"{frame_id}.png")
         if not os.path.exists(color_path):
             # Try .jpg
@@ -322,10 +329,21 @@ class ScanNetLoader(BaseLoader):
             img_rgb = cv2.resize(
                 img_rgb, (resizeW, resizeH), interpolation=cv2.INTER_LINEAR
             )
+            img_bgr = cv2.resize(
+                img_bgr, (resizeW, resizeH), interpolation=cv2.INTER_LINEAR
+            )
+
+        if _debug:
+            _t1 = time.perf_counter()
 
         # Convert to torch [1, 3, H, W] normalized to [0, 1]
         img_torch = torch.from_numpy(img_rgb).permute(2, 0, 1).float() / 255.0
         datum["img0"] = img_torch[None]
+        # Keep BGR uint8 for viz (avoids torch2cv2 round-trip)
+        datum["img_bgr0"] = img_bgr
+
+        if _debug:
+            _t2 = time.perf_counter()
 
         # Load depth (uint16, mm) and resize to match output resolution
         depth_path = os.path.join(self.scene_dir, "frames", "depth", f"{frame_id}.png")
@@ -344,6 +362,9 @@ class ScanNetLoader(BaseLoader):
             datum["depth0"] = torch.from_numpy(depth_np).float()[None, None]
         else:
             datum["depth0"] = torch.zeros(1, 1, resizeH, resizeW, dtype=torch.float32)
+
+        if _debug:
+            _t3 = time.perf_counter()
 
         # Build pinhole camera
         T_cam_rig = torch.tensor(
@@ -396,76 +417,57 @@ class ScanNetLoader(BaseLoader):
         T_wr_data = torch.tensor([*R_flat, *t_vec], dtype=torch.float32)
         datum["T_world_rig0"] = PoseTW(T_wr_data)
 
-        # Semi-dense points from depth (Canny-based sampling)
+        if _debug:
+            _t4 = time.perf_counter()
+
+        # Semi-dense points from depth (uniform subsampling)
+        # Fast numpy-only pinhole unprojection. CameraTW.unproject() adds ~14ms
+        # of overhead per frame (tensor alloc, model dispatch, in_image/in_radius
+        # checks) that dominates for 10k points. Direct math: 0.7ms.
         num_samples = 10000
         if depth_np is not None:
-            valid_depth_mask = depth_np > 0
-            if valid_depth_mask.sum() > 100:
-                img_gray = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2GRAY)
-                try:
-                    edges = cv2.Canny(img_gray, 30, 60)
-                    edges = edges.astype(np.float64) * valid_depth_mask.astype(
-                        np.float64
+            # Subsample the depth image on a grid, then filter valid
+            dh, dw = depth_np.shape
+            step = max(1, int(np.sqrt(dh * dw / (num_samples * 2))))
+            ys_grid, xs_grid = np.mgrid[0:dh:step, 0:dw:step]
+            ys_flat = ys_grid.ravel()
+            xs_flat = xs_grid.ravel()
+            zz = depth_np[ys_flat, xs_flat]
+            valid_mask = zz > 0
+            ys_v = ys_flat[valid_mask]
+            xs_v = xs_flat[valid_mask]
+            zz_v = zz[valid_mask]
+
+            if len(ys_v) > num_samples:
+                idx = np.random.choice(len(ys_v), size=num_samples, replace=False)
+                ys_v, xs_v, zz_v = ys_v[idx], xs_v[idx], zz_v[idx]
+
+            if len(ys_v) > 0:
+                # Pinhole unproject: ray = [(x-cx)/fx, (y-cy)/fy, 1] * depth
+                x3d = (xs_v.astype(np.float32) - cx) / fx * zz_v
+                y3d = (ys_v.astype(np.float32) - cy) / fy * zz_v
+                sdp_c = np.stack([x3d, y3d, zz_v], axis=-1)
+
+                # Transform to world space: sdp_w = R @ sdp_c + t
+                R = T_world_cam[:3, :3]
+                t = T_world_cam[:3, 3]
+                sdp_w_np = (sdp_c @ R.T) + t
+
+                sdp_w = torch.from_numpy(sdp_w_np)
+                if sdp_w.shape[0] < num_samples:
+                    num_pad = num_samples - sdp_w.shape[0]
+                    pad_vals = torch.full(
+                        (num_pad, 3), float("nan"), dtype=torch.float32
                     )
-                    weights_flat = edges.ravel()
-                    if weights_flat.sum() > 0:
-                        weights_flat /= weights_flat.sum()
-                        idx = np.random.choice(
-                            resizeH * resizeW,
-                            size=num_samples,
-                            replace=True,
-                            p=weights_flat,
-                        )
-                        ys, xs = np.unravel_index(idx, (resizeH, resizeW))
-                    else:
-                        valid_ys, valid_xs = np.where(valid_depth_mask)
-                        idx = np.random.choice(
-                            len(valid_ys),
-                            size=min(num_samples, len(valid_ys)),
-                            replace=True,
-                        )
-                        ys, xs = valid_ys[idx], valid_xs[idx]
-                except Exception:
-                    valid_ys, valid_xs = np.where(valid_depth_mask)
-                    if len(valid_ys) > 0:
-                        idx = np.random.choice(
-                            len(valid_ys),
-                            size=min(num_samples, len(valid_ys)),
-                            replace=True,
-                        )
-                        ys, xs = valid_ys[idx], valid_xs[idx]
-                    else:
-                        xs = np.array([])
-                        ys = np.array([])
-
-                if len(xs) > 0:
-                    points = np.stack([xs, ys], axis=-1).astype(np.float32)
-                    points3, valid = cam.unproject(torch.from_numpy(points)[None])
-                    points3 = points3[0].numpy()
-                    valid = valid[0].numpy()
-                    zz = depth_np[ys.astype(int), xs.astype(int)]
-                    sdp_c = points3 * zz.reshape(-1, 1)
-                    valid_pts = valid & (zz > 0)
-                    sdp_c = sdp_c[valid_pts]
-
-                    # Transform to recentered world space
-                    sdp_c_torch = torch.from_numpy(sdp_c.astype(np.float32))
-                    T_wr = datum["T_world_rig0"]
-                    sdp_w = T_wr * sdp_c_torch
-
-                    if sdp_w.shape[0] < num_samples:
-                        num_pad = num_samples - sdp_w.shape[0]
-                        pad_vals = torch.full(
-                            (num_pad, 3), float("nan"), dtype=torch.float32
-                        )
-                        sdp_w = torch.cat([sdp_w, pad_vals], dim=0)
-                    datum["sdp_w"] = sdp_w.float()
-                else:
-                    datum["sdp_w"] = torch.zeros(0, 3, dtype=torch.float32)
+                    sdp_w = torch.cat([sdp_w, pad_vals], dim=0)
+                datum["sdp_w"] = sdp_w.float()
             else:
                 datum["sdp_w"] = torch.zeros(0, 3, dtype=torch.float32)
         else:
             datum["sdp_w"] = torch.zeros(0, 3, dtype=torch.float32)
+
+        if _debug:
+            _t5 = time.perf_counter()
 
         # Metadata
         datum["time_ns0"] = int(frame_id)
@@ -473,6 +475,10 @@ class ScanNetLoader(BaseLoader):
         datum["num_img"] = torch.tensor(1).reshape(1)
         datum["bb2d0"] = torch.zeros(0, 4, dtype=torch.float32)
         datum["gt_labels"] = []
+
+        if _debug:
+            _t6 = time.perf_counter()
+            print(f"    [loader] imread: {(_t1-_t0)*1000:.1f}ms  to_torch: {(_t2-_t1)*1000:.1f}ms  depth: {(_t3-_t2)*1000:.1f}ms  cam+pose: {(_t4-_t3)*1000:.1f}ms  sdp: {(_t5-_t4)*1000:.1f}ms  total: {(_t6-_t0)*1000:.1f}ms", flush=True)
 
         self.index += 1
         return datum

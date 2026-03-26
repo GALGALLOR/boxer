@@ -14,7 +14,7 @@ from functools import lru_cache
 import torch
 import torch.nn.functional as F
 
-_CKPT_PATH = os.path.expanduser("~/data/boxer/owlv2-base-patch16-ensemble.pt")
+_CKPT_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "ckpts", "owlv2-base-patch16-ensemble.pt")
 
 
 @lru_cache()

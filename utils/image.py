@@ -197,50 +197,48 @@ def draw_bb3_lines(
     # reshape to lines each composed of T segments
     pt2s = pt2s.round().int().view(B * 12, T, 2)
     valids = valids.view(B * 12, T)
-    for line in range(pt2s.shape[0]):
-        line_id = line % 12
-        obb_id = line // 12
-        sem_id = sem_ids[obb_id]
-        if colors is not None:
-            color = colors[obb_id]
-        elif prob_color:
-            prob = float(1.0 - obbs[obb_id].prob)
-            max_val = 0.5
-            min_val = 0.05
-            prob = (prob - min_val) / (max_val - min_val)
-            prob = max(0.0, min(1.0, prob))
-            val = np.uint8([[int(prob * 255)]])
-            bgr = cv2.applyColorMap(val, cv2.COLORMAP_JET)[0, 0]
-            color = (int(bgr[0]), int(bgr[1]), int(bgr[2]))
-        else:
-            color = obbs[obb_id].color
-            if (color == -1).all():
-                color = 255, 255, 255
-            else:
-                color = (
-                    int(round(float(color[2] * 255))),
-                    int(round(float(color[1] * 255))),
-                    int(round(float(color[0] * 255))),
-                )
 
+    # Pre-compute per-OBB colors
+    obb_colors = []
+    if colors is not None:
+        obb_colors = colors
+    elif prob_color:
+        probs = (1.0 - obbs.prob.float()).squeeze(-1).cpu().numpy()
+        probs = (probs - 0.05) / (0.5 - 0.05)
+        probs = np.clip(probs, 0.0, 1.0)
+        u8 = (probs * 255).astype(np.uint8).reshape(1, -1)
+        bgrs = cv2.applyColorMap(u8, cv2.COLORMAP_JET)[0]
+        obb_colors = [(int(b[0]), int(b[1]), int(b[2])) for b in bgrs]
+    else:
+        for obb_id in range(B):
+            c = obbs[obb_id].color
+            if (c == -1).all():
+                obb_colors.append((255, 255, 255))
+            else:
+                obb_colors.append((
+                    int(round(float(c[2] * 255))),
+                    int(round(float(c[1] * 255))),
+                    int(round(float(c[0] * 255))),
+                ))
+
+    # Convert to numpy for fast indexing
+    pt2s_np = pt2s.cpu().numpy()
+    valids_np = valids.cpu().numpy()
+
+    # Draw all line segments
+    for line in range(pt2s_np.shape[0]):
+        obb_id = line // 12
+        color = obb_colors[obb_id]
+        if draw_cosy and (line % 12) in AXIS_COLORS_RGB:
+            color = AXIS_COLORS_RGB[line % 12]
+        v = valids_np[line]
+        pts = pt2s_np[line]
         for i in range(T - 1):
-            j = i + 1
-            if valids[line, i] and valids[line, j]:
-                # check if we should color this line in a special way
-                if draw_cosy and line_id in AXIS_COLORS_RGB:
-                    color = AXIS_COLORS_RGB[line_id]
-                pt1 = (
-                    int(round(float(pt2s[line, i, 0]))),
-                    int(round(float(pt2s[line, i, 1]))),
-                )
-                pt2 = (
-                    int(round(float(pt2s[line, j, 0]))),
-                    int(round(float(pt2s[line, j, 1]))),
-                )
+            if v[i] and v[i + 1]:
                 cv2.line(
                     viz,
-                    pt1,
-                    pt2,
+                    (int(pts[i, 0]), int(pts[i, 1])),
+                    (int(pts[i + 1, 0]), int(pts[i + 1, 1])),
                     color,
                     thickness,
                     lineType=line_type,
@@ -256,7 +254,7 @@ def draw_bb3s(
     draw_label=False,
     draw_cosy=False,
     draw_score=False,
-    render_obb_corner_steps=10,
+    render_obb_corner_steps=6,
     line_type=cv2.LINE_AA,
     rotate_label=True,
     white_backing_line=False,
@@ -284,7 +282,7 @@ def draw_bb3s(
         obbs,
         draw_cosy=draw_cosy,
         T=render_obb_corner_steps,
-        line_type=cv2.LINE_AA,
+        line_type=line_type,
         thickness=thickness,
         prob_color=prob_color,
         colors=colors,
@@ -294,6 +292,9 @@ def draw_bb3s(
         bb3center_cam = T_world_cam.inverse() * obbs.bb3_center_world
         bb2center_im, valids = cam.unsqueeze(0).project(bb3center_cam.unsqueeze(0))
         bb2center_im, valids = bb2center_im.squeeze(0), valids.squeeze(0)
+
+        # Collect label draw info
+        label_items = []
         for idx, (pt2, valid) in enumerate(zip(bb2center_im, valids)):
             if valid:
                 center = (int(pt2[0]), int(pt2[1]))
@@ -301,49 +302,40 @@ def draw_bb3s(
                     cv2.circle(viz, center, 3, (255, 0, 0), 1, lineType=line_type)
 
                 if draw_label or texts is not None:
-                    height = viz.shape[0]
-                    sem_id = int(obbs.sem_id.squeeze(-1)[idx])
-
                     if texts is not None:
                         text = texts[idx]
                     else:
                         text = obbs.text[idx]
                         if (text == -1).all():
-                            text = str(sem_id)
+                            text = str(int(obbs.sem_id.squeeze(-1)[idx]))
                         else:
                             text = unpad_string(tensor2string(obbs.text[idx].byte()))
-                    if colors is not None:
-                        text_clr = colors[idx]
-                    else:
-                        text_clr = (200, 200, 200)
+                    text_clr = colors[idx] if colors is not None else (200, 200, 200)
+                    score = float(obbs.prob.squeeze(-1)[idx]) if draw_score and obbs.prob is not None else None
+                    label_items.append((center, text, text_clr, score))
 
-                    # rot 90 degree before drawing the text
-                    if rotate_label:
-                        viz = cv2.rotate(viz, cv2.ROTATE_90_CLOCKWISE)
-                        center_rot90 = (height - center[1], center[0])
-                        x, y = center_rot90
-                    else:
-                        x, y = center
+        if label_items:
+            height = viz.shape[0]
+            if rotate_label:
+                viz = cv2.rotate(viz, cv2.ROTATE_90_CLOCKWISE)
+
+            for center, text, text_clr, score in label_items:
+                if rotate_label:
+                    x, y = height - center[1], center[0]
+                else:
+                    x, y = center
+                put_text(viz, text, scale=text_sz, font_pt=(x, y), color=text_clr)
+                if score is not None:
                     ((txt_w, txt_h), _) = cv2.getTextSize(
                         text, cv2.FONT_HERSHEY_DUPLEX, text_sz, 1
                     )
+                    put_text(
+                        viz, f"prob={score:.2f}", scale=text_sz,
+                        font_pt=(x, y + int(txt_h + 0.5)), color=text_clr,
+                    )
 
-                    ## Show text on top of the 3d boxes
-                    put_text(viz, text, scale=text_sz, font_pt=(x, y), color=text_clr)
-                    if draw_score and obbs.prob is not None:
-                        score = float(obbs.prob.squeeze(-1)[idx])
-                        score_text = f"prob={score:.2f}"
-                        score_pos = (x, y + int(txt_h + 0.5))
-                        put_text(
-                            viz,
-                            score_text,
-                            scale=text_sz,
-                            font_pt=score_pos,
-                            color=text_clr,
-                        )
-
-                    if rotate_label:
-                        viz = cv2.rotate(viz, cv2.ROTATE_90_COUNTERCLOCKWISE)
+            if rotate_label:
+                viz = cv2.rotate(viz, cv2.ROTATE_90_COUNTERCLOCKWISE)
 
     if already_rotated:
         viz = cv2.rotate(viz, cv2.ROTATE_90_CLOCKWISE)
@@ -401,16 +393,18 @@ def render_bb2(img, bb2s, scale=1.0, clr=(0, 255, 0), rotated=False, texts=None)
 
 
 def render_depth_patches(sdp_median, rotated, HH, WW):
-    sdp_median = sdp_median[None]
-    sdp_median = torch.nn.functional.interpolate(
-        sdp_median, size=(HH, WW), mode="nearest"
-    )
-    sdp_median = sdp_median[0, 0]
+    """Returns (colorized_bgr, raw_resized_numpy) to avoid duplicate interpolation."""
+    raw_small = sdp_median.squeeze().numpy()
+    # Colorize at small resolution, then resize (much faster than colorizing full-res)
     max_depth = 5.0
     min_depth = 0.1
-    sdp_median = (sdp_median - min_depth) / (max_depth - min_depth)
-    sdp_u8 = (sdp_median.clamp(0, 1).numpy() * 255).astype(np.uint8)
-    sdp_img2 = cv2.applyColorMap(sdp_u8, cv2.COLORMAP_JET)
+    sdp_norm = np.clip((raw_small - min_depth) / (max_depth - min_depth), 0, 1)
+    sdp_u8 = (sdp_norm * 255).astype(np.uint8)
+    sdp_color_small = cv2.applyColorMap(sdp_u8, cv2.COLORMAP_JET)
+    # Resize colorized and raw to full resolution
+    sdp_img2 = cv2.resize(sdp_color_small, (WW, HH), interpolation=cv2.INTER_NEAREST)
+    raw_np = cv2.resize(raw_small, (WW, HH), interpolation=cv2.INTER_NEAREST)
     if rotated:
         sdp_img2 = cv2.rotate(sdp_img2, cv2.ROTATE_90_CLOCKWISE)
-    return sdp_img2
+        raw_np = np.rot90(raw_np, k=-1).copy()
+    return sdp_img2, raw_np

@@ -3,6 +3,7 @@
 # pyre-unsafe
 import argparse
 import os
+import time
 
 import re
 
@@ -13,10 +14,9 @@ from boxernet.boxernet import BoxerNet
 from utils.demo_utils import (
     CKPT_PATH,
     EVAL_PATH,
+    SAMPLE_DATA_PATH,
     CudaTimer,
     DEFAULT_SEQ,
-    expand_seq_shorthand,
-    handle_input,
 )
 
 
@@ -43,6 +43,16 @@ def jet_color(val):
     val = max(0.0, min(1.0, float(val)))
     bgr = cv2.applyColorMap(np.uint8([[int(val * 255)]]), cv2.COLORMAP_JET)[0, 0]
     return (float(bgr[2]) / 255.0, float(bgr[1]) / 255.0, float(bgr[0]) / 255.0)
+
+
+def jet_colors_bgr(scores):
+    """Vectorized: map array of scores in [0,1] to list of BGR (int) tuples."""
+    if len(scores) == 0:
+        return []
+    vals = np.clip(np.array(scores, dtype=np.float32), 0.0, 1.0)
+    u8 = (vals * 255).astype(np.uint8).reshape(1, -1)
+    bgr = cv2.applyColorMap(u8, cv2.COLORMAP_JET)[0]  # (N, 3)
+    return [tuple(int(c) for c in row) for row in bgr]
 
 
 TAB20 = [
@@ -80,10 +90,11 @@ def main():
     parser.add_argument("--labels", type=comma_separated_list, nargs="?", const=[], default=["lvisplus"], help="Optional comma-separated list of text prompts (e.g. --labels=small or --labels=chair,table,lamp)")
     parser.add_argument("--detector_hw", type=int, default=960, help="resize images before going into 2D detector")
     parser.add_argument("--write_name", default="boxer", type=str, help="name prefix for outputs")
-    parser.add_argument("--viz_headless", action="store_true", help="run OpenCV 2D panel visualization")
+    parser.add_argument("--no_viz", action="store_true", help="disable headless visualization (on by default)")
     parser.add_argument("--cache2d", action="store_true", help="load 2D BBs from CSV instead of running detector")
     parser.add_argument("--cache3d", action="store_true", help="load 3D BBs from CSV instead of running BoxerNet")
     parser.add_argument("--no_sdp", action="store_true", help="turn off SDP input")
+    parser.add_argument("--no_csv", action="store_true", help="skip CSV writing")
     parser.add_argument("--force_cpu", action="store_true", help="force CPU")
     parser.add_argument("--gt2d", action="store_true", help="use GT pseudo 2DBB as input")
     parser.add_argument("--fuse", action="store_true", help="run offline 3D box fusion after processing")
@@ -97,9 +108,21 @@ def main():
         parser.error("--fuse and --track are mutually exclusive")
     if args.cache3d:
         args.cache2d = True
+    args.viz_headless = not args.no_viz
     print(args)
     # fmt: on
 
+    DEBUG = os.environ.get("DEBUG", "0") == "1"
+    _t_start = time.perf_counter()
+    _t_prev = _t_start
+
+    def _dbg(label):
+        nonlocal _t_prev
+        if not DEBUG:
+            return
+        now = time.perf_counter()
+        print(f"  [init] {label}: {(now - _t_prev)*1000:.0f}ms (total: {(now - _t_start)*1000:.0f}ms)", flush=True)
+        _t_prev = now
 
     # Determine dataset type and seq_name from input string
     if bool(re.search(r"scene\d{4}_\d{2}", args.input)) or "/scannet/" in args.input:
@@ -113,12 +136,15 @@ def main():
         seq_name = args.input
     else:
         dataset_type = "aria"
-        remote_root = handle_input(expand_seq_shorthand(args.input))
-        # Resolve bare sequence names to ~/boxy_data/<name>
+        remote_root = args.input
+        # Resolve bare sequence names: try sample_data/ first, then ~/boxy_data/
         if not os.path.isabs(remote_root) and not os.path.exists(remote_root):
-            resolved = os.path.expanduser(os.path.join("~/boxy_data", remote_root))
-            if os.path.exists(resolved):
-                remote_root = resolved
+            sample = os.path.join(SAMPLE_DATA_PATH, remote_root)
+            legacy = os.path.expanduser(os.path.join("~/boxy_data", remote_root))
+            if os.path.exists(sample):
+                remote_root = sample
+            elif os.path.exists(legacy):
+                remote_root = legacy
         seq_name = remote_root.rstrip("/").split("/")[-1]
 
     # get name of containing directory
@@ -126,8 +152,9 @@ def main():
     log_dir = os.path.join(output_dir, seq_name)
     os.makedirs(log_dir, exist_ok=True)
     csv_path = os.path.join(log_dir, f"{args.write_name}_3dbbs.csv")
-    csv2d_out_path = os.path.join(log_dir, f"{args.write_name}_2dbbs.csv")
+    csv2d_out_path = os.path.join(log_dir, "owl_2dbbs.csv")
     print(f"==> Created output folder {log_dir}")
+    _dbg("setup")
 
     # --cache3d: skip detection + BoxerNet + loader, go straight to post-processing
     if args.cache3d:
@@ -182,7 +209,6 @@ def main():
             start_frame=args.start_n,
             skip_frames=args.skip_n,
             max_frames=args.max_n,
-            pinhole=args.pinhole,
             resize=(args.detector_hw, args.detector_hw),
             use_canny=False,
         )
@@ -201,6 +227,8 @@ def main():
             max_n=args.max_n,
             start_n=args.start_n,
         )
+
+    _dbg("loader")
 
     # choose a model checkpoint
     if torch.backends.mps.is_available() and not args.force_cpu:
@@ -236,6 +264,8 @@ def main():
                 "This is available for CALoader (ca1m sequences) and AriaLoader with --gt2d."
             )
 
+    _dbg("labels_gt")
+
     # Load text labels if they match special strings.
     text_labels = load_text_labels(args.labels)
     # Track taxonomy name for visualization
@@ -266,10 +296,12 @@ def main():
             precision=args.precision,
         )
         method = "OWLv2"
+    _dbg("det2d")
 
     boxernet = BoxerNet.load_from_checkpoint(args.ckpt, device=device)
     loader.resize = boxernet.hw
     print(f"==> Will resize images to {loader.resize}x{loader.resize} for boxernet")
+    _dbg("boxernet")
 
     # Print model architecture
     total_params = sum(p.numel() for p in boxernet.parameters())
@@ -281,6 +313,8 @@ def main():
         print(f"  {name}: {module.__class__.__name__} ({n_params / 1e6:.2f}M)")
     print("=" * 50)
 
+    _dbg("arch_print")
+
     video_dir = os.path.join(log_dir, f"{args.write_name}_viz")
     if args.viz_headless:
         safe_delete_folder(
@@ -288,7 +322,7 @@ def main():
         )
         os.makedirs(video_dir, exist_ok=True)
         print(
-            f"==> Current frame: {os.path.join(log_dir, f'{args.write_name}_viz_current.png')}"
+            f"==> Current frame: {os.path.join(log_dir, f'{args.write_name}_viz_current.jpg')}"
         )
 
     colors = {
@@ -303,7 +337,7 @@ def main():
         sem_name_to_id = {label: i for i, label in enumerate(text_labels)}
         sem_id_to_name = {v: k for k, v in sem_name_to_id.items()}
 
-    writer = ObbCsvWriter2(csv_path)
+    writer = None if args.no_csv else ObbCsvWriter2(csv_path)
 
     tracker = None
     if args.track:
@@ -323,17 +357,26 @@ def main():
         if args.track:
             panels.append(img_np)
         final = np.hstack(panels)
-        out_path = os.path.join(video_dir, f"{args.write_name}_viz_{ii:05d}.png")
-        cv2.imwrite(out_path, final)
-        out_path = os.path.join(log_dir, f"{args.write_name}_viz_current.png")
-        cv2.imwrite(out_path, final)
+        _, jpg_buf = cv2.imencode(".jpg", final, [cv2.IMWRITE_JPEG_QUALITY, 85])
+        jpg_bytes = jpg_buf.tobytes()
+        out_path = os.path.join(video_dir, f"{args.write_name}_viz_{ii:05d}.jpg")
+        with open(out_path, "wb") as f:
+            f.write(jpg_bytes)
+        out_path = os.path.join(log_dir, f"{args.write_name}_viz_current.jpg")
+        with open(out_path, "wb") as f:
+            f.write(jpg_bytes)
 
     timestamps_ns = []  # Collect timestamps to compute FPS
     timer = CudaTimer(device)
     pbar = tqdm(range(len(loader)), desc="BoxerNet")
+    DEBUG_VIZ = os.environ.get("DEBUG_VIZ", "0") == "1"
+    _dbg("ready")
+
     for ii in pbar:
         # Data loading
         timer.start("load")
+        if DEBUG_VIZ:
+            _tl0 = time.perf_counter()
         try:
             datum = next(loader)
         except StopIteration:
@@ -342,6 +385,9 @@ def main():
         if datum is False:
             pbar.set_postfix_str("Skipped (time misalignment)")
             continue
+
+        if DEBUG_VIZ:
+            _tl1 = time.perf_counter()
 
         # Collect timestamp for FPS calculation
         if args.viz_headless and "time_ns0" in datum:
@@ -352,6 +398,10 @@ def main():
         HH, WW = img_torch.shape[2], img_torch.shape[3]
         img_np = torch2cv2(img_torch, rotate=rotated, ensure_rgb=True)
         t_load = timer.stop("load")
+
+        if DEBUG_VIZ:
+            _tl2 = time.perf_counter()
+            print(f"  [load] next(loader): {(_tl1-_tl0)*1000:.1f}ms  torch2cv2: {(_tl2-_tl1)*1000:.1f}ms", flush=True)
 
         sdp_w_viz = datum["sdp_w"].float()  # Keep original SDP for visualization
         if args.no_sdp:
@@ -488,26 +538,27 @@ def main():
         # Visualization (includes writing CSV and images)
         timer.start("csv")
         time_ns = int(datum["time_ns0"])
-        writer.write(obb_pr_w, time_ns, sem_id_to_name=sem_id_to_name)
+        if writer is not None:
+            writer.write(obb_pr_w, time_ns, sem_id_to_name=sem_id_to_name)
 
-        # Convert bb2d from boxer format (x1, x2, y1, y2) to standard (x1, y1, x2, y2)
-        bb2d_xyxy = bb2d[:, [0, 2, 1, 3]]
-        save_bb2d_csv(
-            csv2d_out_path,
-            frame_id=ii,
-            bb2d=bb2d_xyxy,
-            scores=scores2d,
-            labels=labels2d,
-            sem_name_to_id=sem_name_to_id,
-            append=(ii > 0),
-            time_ns=time_ns,
-            img_width=WW,
-            img_height=HH,
-            sensor=loader.camera if hasattr(loader, "camera") else "unknown",
-            device=loader.device_name
-            if hasattr(loader, "device_name")
-            else "unknown",
-        )
+            # Convert bb2d from boxer format (x1, x2, y1, y2) to standard (x1, y1, x2, y2)
+            bb2d_xyxy = bb2d[:, [0, 2, 1, 3]]
+            save_bb2d_csv(
+                csv2d_out_path,
+                frame_id=ii,
+                bb2d=bb2d_xyxy,
+                scores=scores2d,
+                labels=labels2d,
+                sem_name_to_id=sem_name_to_id,
+                append=(ii > 0),
+                time_ns=time_ns,
+                img_width=WW,
+                img_height=HH,
+                sensor=loader.camera if hasattr(loader, "camera") else "unknown",
+                device=loader.device_name
+                if hasattr(loader, "device_name")
+                else "unknown",
+            )
         t_csv = timer.stop("csv")
 
         active_tracks = None
@@ -520,10 +571,16 @@ def main():
 
         if args.viz_headless:
             timer.start("viz")
+            _t0 = time.perf_counter()
+
             bb2_texts = [f"{l} {s:.2f}" for s, l in zip(scores2d, labels2d)]
-            bb2_colors = [(np.array(jet_color(1.0 - s)) * 255).tolist() for s in scores2d]
+            bb2_colors = jet_colors_bgr([1.0 - s for s in scores2d])
             bb3_texts = [f"{l} {s:.2f}" for s, l in zip(scores3d, labels3d)]
-            bb3_colors = [(np.array(jet_color(1.0 - s)) * 255).tolist() for s in scores3d]
+            bb3_colors = jet_colors_bgr([1.0 - s for s in scores3d])
+
+            if DEBUG_VIZ:
+                _t1 = time.perf_counter()
+                print(f"  [viz] colors: {(_t1-_t0)*1000:.1f}ms", flush=True)
 
             viz_2d = img_np.copy()
 
@@ -548,24 +605,42 @@ def main():
             else:
                 put_text(viz_2d, f"{len(text_labels)} TEXT PROMPTS ({taxonomy_name})", scale=0.4, line=line)
 
+            if DEBUG_VIZ:
+                _t2 = time.perf_counter()
+                print(f"  [viz] 2d_panel: {(_t2-_t1)*1000:.1f}ms", flush=True)
+
             # 3D BB Viz on image.
             viz_3d = img_np.copy()
 
             # Overlay sparse depth patches on middle frame
             if "sdp_patch0" in outputs:
+                if DEBUG_VIZ:
+                    _ts0 = time.perf_counter()
                 sdp_median = outputs["sdp_patch0"][0].cpu()
+                if DEBUG_VIZ:
+                    _ts1 = time.perf_counter()
                 HH, WW = viz_3d.shape[:2]
-                viz_sdp = render_depth_patches(sdp_median, rotated=rotated, HH=HH, WW=WW)
-                viz_sdp = np.ascontiguousarray(viz_sdp)  # already BGR from cv2.applyColorMap
-                sdp_resized = torch.nn.functional.interpolate(
-                    sdp_median[None], size=(HH, WW), mode="nearest"
-                )[0, 0].numpy()
-                if rotated:
-                    sdp_resized = np.rot90(sdp_resized, k=-1)  # 90 degrees CW
-                mask = sdp_resized > 0.1
-                viz_3d[mask] = (
-                    viz_sdp[mask] * 0.2 + viz_3d[mask].astype(np.float32) * 0.8
-                ).astype(np.uint8)
+                viz_sdp, sdp_resized = render_depth_patches(sdp_median, rotated=rotated, HH=HH, WW=WW)
+                if DEBUG_VIZ:
+                    _ts2 = time.perf_counter()
+                viz_sdp = np.ascontiguousarray(viz_sdp)
+                mask3 = mask[:, :, None] if (mask := sdp_resized > 0.1).any() else None
+                if DEBUG_VIZ:
+                    _ts3 = time.perf_counter()
+                if mask3 is not None:
+                    # Single-pass fused blend+mask: 0.2 ≈ 51/256, 0.8 ≈ 205/256
+                    viz_3d = np.where(
+                        mask3,
+                        ((viz_sdp.astype(np.uint16) * 51 + viz_3d.astype(np.uint16) * 205) >> 8).astype(np.uint8),
+                        viz_3d,
+                    )
+                if DEBUG_VIZ:
+                    _ts4 = time.perf_counter()
+                    print(f"    [sdp] cpu: {(_ts1-_ts0)*1000:.1f}ms  render: {(_ts2-_ts1)*1000:.1f}ms  mask: {(_ts3-_ts2)*1000:.1f}ms  blend: {(_ts4-_ts3)*1000:.1f}ms", flush=True)
+
+            if DEBUG_VIZ:
+                _t3 = time.perf_counter()
+                print(f"  [viz] sdp: {(_t3-_t2)*1000:.1f}ms", flush=True)
 
             viz_3d = draw_bb3s(
                 viz=viz_3d,
@@ -581,6 +656,10 @@ def main():
             put_text(viz_3d, f"Device: '{loader.device_name}', Camera: '{loader.camera}'", scale=0.5,
                 line=-1,
             )
+
+            if DEBUG_VIZ:
+                _t4 = time.perf_counter()
+                print(f"  [viz] draw_bb3s: {(_t4-_t3)*1000:.1f}ms", flush=True)
 
             panels = [viz_2d, viz_3d]
 
@@ -612,10 +691,24 @@ def main():
 
             final = np.hstack(panels)
 
-            out_path = os.path.join(video_dir, f"{args.write_name}_viz_{ii:05d}.png")
-            cv2.imwrite(out_path, final)
-            out_path = os.path.join(log_dir, f"{args.write_name}_viz_current.png")
-            cv2.imwrite(out_path, final)
+            if DEBUG_VIZ:
+                _t5 = time.perf_counter()
+                print(f"  [viz] panels+hstack: {(_t5-_t4)*1000:.1f}ms", flush=True)
+
+            _, jpg_buf = cv2.imencode(".jpg", final, [cv2.IMWRITE_JPEG_QUALITY, 85])
+            jpg_bytes = jpg_buf.tobytes()
+            out_path = os.path.join(video_dir, f"{args.write_name}_viz_{ii:05d}.jpg")
+            with open(out_path, "wb") as f:
+                f.write(jpg_bytes)
+            out_path = os.path.join(log_dir, f"{args.write_name}_viz_current.jpg")
+            with open(out_path, "wb") as f:
+                f.write(jpg_bytes)
+
+            if DEBUG_VIZ:
+                _t6 = time.perf_counter()
+                print(f"  [viz] imwrite: {(_t6-_t5)*1000:.1f}ms", flush=True)
+                print(f"  [viz] TOTAL: {(_t6-_t0)*1000:.1f}ms", flush=True)
+
             t_viz = timer.stop("viz")
 
         timing_str = f"load:{t_load:.0f}ms det2d:{t_det2d:.0f}ms boxer:{t_boxer:.0f}ms"
@@ -644,7 +737,7 @@ def main():
             video_dir,
             fps,
             output_dir=log_dir,
-            image_glob=f"{args.write_name}_viz_*.png",
+            image_glob=f"{args.write_name}_viz_*.jpg",
             output_name=f"{args.write_name}_viz_final.mp4",
         )
 

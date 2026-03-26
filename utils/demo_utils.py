@@ -5,22 +5,10 @@ from typing import Optional
 
 import torch
 
-EVAL_PATH = os.path.expanduser("~/viz_boxer")
-CKPT_PATH = os.path.expanduser("~/data/boxer")
-
-# Shorthand sequence name mappings
-SEQ_SHORTHANDS = {
-    "hohen": "Hohenwaldeckstr45-02",
-    "nym10": "nym_loc10_newbasemap_463617026552443",
-    "nym44": "nym_loc44_newbasemap_600881115891449",
-    "ntp1": "nebtable_pierre1",
-    "adt": "1WM103600M1292_optitrack_release_work_seq106",
-}
-
-
-def expand_seq_shorthand(seq: str) -> str:
-    """Expand a sequence shorthand to its full name, or return as-is if not a shorthand."""
-    return SEQ_SHORTHANDS.get(seq, seq)
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+EVAL_PATH = os.path.join(_REPO_ROOT, "output")
+CKPT_PATH = os.path.join(_REPO_ROOT, "ckpts")
+SAMPLE_DATA_PATH = os.path.join(_REPO_ROOT, "sample_data")
 
 
 class CudaTimer:
@@ -157,10 +145,6 @@ class CudaTimer:
         name = self._current_name or "default"
         self.stop(name)
         self._current_name = None
-
-
-def handle_input(inp):
-    return inp
 
 
 DEFAULT_SEQ = os.path.expanduser("~/boxy_data/anytable11")

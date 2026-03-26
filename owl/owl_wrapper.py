@@ -77,7 +77,7 @@ class VisionDetectorWrapper(torch.nn.Module):
 
         return pred_logits, pred_boxes
 
-_CKPT_PATH = os.path.expanduser("~/data/boxer/owlv2-base-patch16-ensemble.pt")
+_CKPT_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "ckpts", "owlv2-base-patch16-ensemble.pt")
 
 
 class OwlWrapper(torch.nn.Module):
@@ -93,7 +93,7 @@ class OwlWrapper(torch.nn.Module):
     Use set_text_prompts() to change prompts without re-creating the wrapper.
     """
 
-    def __init__(self, device="cuda", text_prompts=None, min_confidence=0.2, precision="float32"):
+    def __init__(self, device="cuda", text_prompts=None, min_confidence=0.2, precision="float32", warmup=True):
         super().__init__()
 
         if text_prompts is None:
@@ -161,7 +161,8 @@ class OwlWrapper(torch.nn.Module):
         print(f"Loaded OWLv2 on {device} with {len(text_prompts)} text prompts, precision={'bfloat16' if self.use_bfloat16 else 'float32'}")
 
         # Warmup
-        self._warmup()
+        if warmup:
+            self._warmup()
 
     def _encode_text(self, prompts):
         """Tokenize and encode text prompts through the traced text encoder (runs on CPU)."""

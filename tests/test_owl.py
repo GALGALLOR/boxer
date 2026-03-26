@@ -26,6 +26,34 @@ def _has_transformers():
         return False
 
 
+# --------------------------------------------------------------------------
+# Shared fixtures: one OwlWrapper + one forward() call for all tests.
+# --------------------------------------------------------------------------
+
+_shared_wrapper = None
+_shared_forward_result = None
+_shared_forward_img = None
+
+
+def _get_wrapper():
+    global _shared_wrapper
+    if _shared_wrapper is None:
+        _shared_wrapper = OwlWrapper(
+            "cpu", text_prompts=["cat", "dog"], min_confidence=0.001, warmup=False,
+        )
+    return _shared_wrapper
+
+
+def _get_forward_result():
+    global _shared_forward_result, _shared_forward_img
+    if _shared_forward_result is None:
+        wrapper = _get_wrapper()
+        torch.manual_seed(123)
+        _shared_forward_img = torch.rand(1, 3, 480, 640) * 255
+        _shared_forward_result = wrapper.forward(_shared_forward_img)
+    return _shared_forward_img, _shared_forward_result
+
+
 @unittest.skipUnless(_has_transformers(), "transformers not installed")
 class TestOwlMatchesTransformers(unittest.TestCase):
     """Compare traced OWLv2 outputs against the original transformers model."""
@@ -37,26 +65,12 @@ class TestOwlMatchesTransformers(unittest.TestCase):
         cls.model_name = "google/owlv2-base-patch16-ensemble"
         cls.processor = Owlv2Processor.from_pretrained(cls.model_name, use_fast=True)
         cls.hf_model = Owlv2ForObjectDetection.from_pretrained(cls.model_name).eval()
-        cls.traced_wrapper = OwlWrapper("cpu", text_prompts=["cat", "dog"], min_confidence=0.01)
-
-    def _run_hf_pipeline(self, image, text_prompts):
-        """Run the original transformers pipeline and return raw logits + boxes."""
-        inputs = self.processor(
-            text=text_prompts,
-            images=image,
-            return_tensors="pt",
-            size={"height": 960, "width": 960},
-        )
-        # Use interpolate_pos_encoding=False to match traced model (native 960x960)
-        inputs["interpolate_pos_encoding"] = False
-        with torch.no_grad():
-            outputs = self.hf_model(**inputs)
-        return outputs.logits, outputs.pred_boxes
+        cls.wrapper = _get_wrapper()
 
     def test_tokenizer_matches(self):
         """Verify our CLIP tokenizer matches the transformers tokenizer."""
         ref_tok = self.processor.tokenizer
-        my_tok = self.traced_wrapper.tokenizer
+        my_tok = self.wrapper.tokenizer
 
         labels = load_text_labels("lvisplus")
         ref = ref_tok(labels, return_tensors="pt", padding="max_length", max_length=16, truncation=True)
@@ -79,7 +93,6 @@ class TestOwlMatchesTransformers(unittest.TestCase):
             prompts, return_tensors="pt", padding="max_length", max_length=16, truncation=True
         )
 
-        # Reference: transformers text encoder
         with torch.no_grad():
             text_out = self.hf_model.owlv2.text_model(
                 input_ids=ref_inputs["input_ids"],
@@ -87,9 +100,10 @@ class TestOwlMatchesTransformers(unittest.TestCase):
             )
             ref_embeds = self.hf_model.owlv2.text_projection(text_out[1])
 
-        # Ours: traced text encoder
-        wrapper = OwlWrapper("cpu", text_prompts=prompts, min_confidence=0.1)
-        our_embeds = wrapper.text_embeddings
+        # Temporarily set prompts to match, then restore
+        self.wrapper.set_text_prompts(prompts)
+        our_embeds = self.wrapper.text_embeddings
+        self.wrapper.set_text_prompts(["cat", "dog"])
 
         max_diff = (ref_embeds - our_embeds).abs().max().item()
         self.assertLess(max_diff, 1e-4, f"Text embedding max diff {max_diff:.2e} exceeds tolerance")
@@ -97,13 +111,11 @@ class TestOwlMatchesTransformers(unittest.TestCase):
     def test_vision_logits_match(self):
         """Verify traced vision detector logits match transformers on same preprocessed input."""
         prompts = ["cat", "dog"]
-        torch.manual_seed(42)
-        test_image = torch.randint(0, 255, (1, 3, 480, 640), dtype=torch.float32)
+        img, _ = _get_forward_result()
 
-        # Get HF preprocessed input and run HF model
         inputs = self.processor(
             text=prompts,
-            images=test_image,
+            images=img,
             return_tensors="pt",
             size={"height": 960, "width": 960},
         )
@@ -111,13 +123,11 @@ class TestOwlMatchesTransformers(unittest.TestCase):
         with torch.no_grad():
             hf_out = self.hf_model(**inputs)
 
-        # Run traced model with SAME preprocessed pixels (to isolate model diff from preproc diff)
-        wrapper = OwlWrapper("cpu", text_prompts=prompts, min_confidence=0.01)
         with torch.no_grad():
-            traced_logits, traced_boxes = wrapper.vision_detector(
+            traced_logits, traced_boxes = self.wrapper.vision_detector(
                 inputs["pixel_values"],
-                wrapper.text_embeddings,
-                wrapper.query_mask,
+                self.wrapper.text_embeddings,
+                self.wrapper.query_mask,
             )
 
         logits_diff = (hf_out.logits - traced_logits).abs().max().item()
@@ -128,9 +138,7 @@ class TestOwlMatchesTransformers(unittest.TestCase):
 
     def test_detection_output_format(self):
         """Verify forward() returns correct types and shapes."""
-        wrapper = OwlWrapper("cpu", text_prompts=["cat", "dog"], min_confidence=0.01)
-        img = torch.rand(1, 3, 480, 640) * 255
-        boxes, scores, labels, masks = wrapper.forward(img)
+        _, (boxes, scores, labels, masks) = _get_forward_result()
 
         self.assertIsInstance(boxes, torch.Tensor)
         self.assertIsInstance(scores, torch.Tensor)
@@ -143,33 +151,30 @@ class TestOwlMatchesTransformers(unittest.TestCase):
 
     def test_set_text_prompts(self):
         """Verify text prompts can be changed dynamically."""
-        wrapper = OwlWrapper("cpu", text_prompts=["cat"], min_confidence=0.01)
-        self.assertEqual(wrapper.text_embeddings.shape[0], 1)
+        wrapper = self.wrapper
+        self.assertEqual(wrapper.text_embeddings.shape[0], 2)
 
         wrapper.set_text_prompts(["cat", "dog", "bird"])
         self.assertEqual(wrapper.text_embeddings.shape[0], 3)
         self.assertEqual(len(wrapper.text_prompts), 3)
         self.assertEqual(wrapper.query_mask.shape[0], 3)
 
+        # Restore original prompts
+        wrapper.set_text_prompts(["cat", "dog"])
+
     def test_rotated_input(self):
         """Verify rotated input doesn't crash and returns valid output."""
-        wrapper = OwlWrapper("cpu", text_prompts=["cat"], min_confidence=0.01)
-        img = torch.rand(1, 3, 480, 640) * 255
-        boxes, scores, labels, masks = wrapper.forward(img, rotated=True)
+        img, _ = _get_forward_result()
+        boxes, scores, labels, masks = self.wrapper.forward(img, rotated=True)
 
         self.assertIsInstance(boxes, torch.Tensor)
         self.assertEqual(boxes.shape[1], 4) if len(boxes) > 0 else None
 
     def test_box_coordinate_convention(self):
         """Verify boxes use x1, x2, y1, y2 convention (not x1, y1, x2, y2)."""
-        # Use a very low threshold to get some detections even on noise
-        wrapper = OwlWrapper("cpu", text_prompts=["cat", "dog"], min_confidence=0.001)
-        torch.manual_seed(123)
-        img = torch.rand(1, 3, 480, 640) * 255
-        boxes, scores, labels, _ = wrapper.forward(img)
+        _, (boxes, scores, labels, _) = _get_forward_result()
 
         if len(boxes) > 0:
-            # Convention: x1, x2, y1, y2 where x1 <= x2 and y1 <= y2
             x1, x2, y1, y2 = boxes[:, 0], boxes[:, 1], boxes[:, 2], boxes[:, 3]
             self.assertTrue((x1 <= x2).all(), "x1 > x2 in some boxes")
             self.assertTrue((y1 <= y2).all(), "y1 > y2 in some boxes")
@@ -182,9 +187,8 @@ class TestOwlWrapperStandalone(unittest.TestCase):
         """Verify the wrapper doesn't import transformers at runtime."""
         import sys
 
-        # Clear any cached imports
         mods_before = set(sys.modules.keys())
-        _ = OwlWrapper("cpu", text_prompts=["test"], min_confidence=0.5)
+        _ = _get_wrapper()
         mods_after = set(sys.modules.keys())
         new_mods = mods_after - mods_before
         self.assertNotIn("transformers", new_mods)
@@ -227,7 +231,6 @@ class TestTextEmbedder(unittest.TestCase):
         """Verify semantically similar labels have higher cosine similarity."""
         embeds = self.embedder.forward(["sofa", "couch", "refrigerator"])
         sim = embeds @ embeds.T
-        # sofa-couch should be more similar than sofa-refrigerator
         self.assertGreater(sim[0, 1].item(), sim[0, 2].item())
 
     def test_deterministic(self):
@@ -240,7 +243,7 @@ class TestTextEmbedder(unittest.TestCase):
         """Verify TextEmbedder produces same embeddings as OWL checkpoint's text encoder."""
         import io
         import os
-        ckpt_path = os.path.expanduser("~/data/boxer/owlv2-base-patch16-ensemble.pt")
+        ckpt_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "ckpts", "owlv2-base-patch16-ensemble.pt")
         if not os.path.exists(ckpt_path):
             self.skipTest("OWL checkpoint not found")
 

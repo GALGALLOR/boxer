@@ -43,13 +43,31 @@ pip install moderngl moderngl-window imgui[glfw] pyrr
 
 ### Model Checkpoint
 
-Download the BoxerNet checkpoint and place it at `~/data/boxer/`:
+Download the checkpoints and place them in the `ckpts/` directory:
 
 ```bash
-mkdir -p ~/data/boxer
-# Place checkpoint file, e.g.:
-# ~/data/boxer/bxr_alln2nw12bs12hw960in2x6d768ni1_Nov20.ckpt
+mkdir -p ckpts
+# Place checkpoint files:
+# ckpts/bxr_alln2nw12bs12hw960in2x6d768ni1_Nov20.ckpt
+# ckpts/dinov3_vits16plus_pretrain_lvd1689m-4057cbaa.pth
+# ckpts/owlv2-base-patch16-ensemble.pt
 ```
+
+### Sample Data
+
+Download a sample ScanNet scene for testing:
+
+```bash
+# Downloads scene0084_02 to sample_data/ using the official scannet_frames_25k subset
+python scripts/download_scannet_sample.py
+
+# Download a different scene
+python scripts/download_scannet_sample.py --scene scene0339_00
+```
+
+Note: ScanNet data is subject to the [ScanNet Terms of Use](http://kaldir.vc.in.tum.de/scannet/ScanNet_TOS.pdf).
+For the full dataset, request access at [github.com/ScanNet/ScanNet](https://github.com/ScanNet/ScanNet).
+For ground-truth 3D box annotations, see [Scan2CAD](https://github.com/skanti/Scan2CAD).
 
 ## Usage
 
@@ -57,23 +75,26 @@ The pipeline supports optional **online 3D tracking** (`--track`) for temporal c
 
 ```bash
 
-# Basic: run on an Aria sequence with OWLv2 detector
-python run_boxer.py --input /path/to/aria/sequence 
+# Basic: run on a sample Aria sequence (place data in sample_data/)
+python run_boxer.py --input sor01
 
 # Add visualization with opencv which works without a display
-python run_boxer.py --input /path/to/aria/sequence --viz_headless
+python run_boxer.py --input sor01 --viz_headless
 
 # Custom text prompts
-python run_boxer.py --input /path/to/sequence --labels=chair,table,lamp
+python run_boxer.py --input sor01 --labels=chair,table,lamp
 
 # Run with online 3D tracking (adds a third visualization panel)
-python run_boxer.py --input /path/to/sequence --track
+python run_boxer.py --input sor01 --track
 
 # Run with post-hoc 3D box fusion
-python run_boxer.py --input /path/to/sequence --fuse
+python run_boxer.py --input sor01 --fuse
 
 # ScanNet sequence
-python run_boxer.py --input /path/to/scannet/scene0000_00
+python run_boxer.py --input scene0084_02
+
+# CA-1M sequence
+python run_boxer.py --input ca1m-val-45261179
 
 # Omni3D dataset
 python run_boxer.py --input SUNRGBD
@@ -92,7 +113,7 @@ python run_boxer.py --input /path/to/sequence --precision bfloat16
 
 Results are written to `~/viz_boxer/<sequence_name>/`:
 - `boxer_3dbbs.csv` — per-frame 3D bounding boxes
-- `boxer_2dbbs.csv` — per-frame 2D detections
+- `owl_2dbbs.csv` — per-frame 2D detections
 - `boxer_3dbbs_tracked.csv` — tracked 3D boxes (with `--track`)
 - `boxer_viz_final.mp4` — visualization video
 
@@ -130,8 +151,7 @@ boxer/
 │   └── dinov3_wrapper.py     # DINOv3 backbone wrapper
 ├── owl/
 │   ├── owl_wrapper.py        # OWLv2 open-vocabulary detector (JIT-traced, no transformers needed)
-│   ├── clip_tokenizer.py     # CLIP BPE tokenizer + text embedder
-│   └── export_owl.py         # One-time export script (requires transformers)
+│   └── clip_tokenizer.py     # CLIP BPE tokenizer + text embedder
 ├── loaders/
 │   ├── base_loader.py        # Base loader interface
 │   ├── aria_loader.py        # Aria glasses data loader
@@ -139,27 +159,23 @@ boxer/
 │   ├── omni_loader.py        # Omni3D dataset loader
 │   └── scannet_loader.py     # ScanNet dataset loader
 ├── tests/                    # Unit tests (see tests/README.md)
-├── tw/                       # TensorWrapper types
+├── tw/                       # TensorWrapper types (see tw/README.md)
 │   ├── tensor_wrapper.py     # TensorWrapper base class
 │   ├── camera.py             # CameraTW: camera intrinsics + projection
 │   ├── obb.py                # ObbTW tensor wrapper + IoU computation
-│   └── pose.py               # PoseTW: SE(3) poses + quaternion math
+│   ├── pose.py               # PoseTW: SE(3) poses + quaternion math
+│   └── tensor_utils.py       # String/tensor conversions, array helpers
 └── utils/
-    ├── tensor_utils.py       # Tensor manipulation helpers
-    ├── gravity.py            # Gravity alignment utilities
-    ├── hungarian.py          # Pure-Python Hungarian algorithm + connected components
+    ├── fuse_3d_boxes.py      # 3D box fusion + Hungarian algorithm
     ├── track_3d_boxes.py     # Online 3D bounding box tracker
-    ├── fuse_3d_boxes.py      # Post-hoc 3D box fusion
-    ├── render.py             # 3D box rendering on images
-    ├── viz_boxer.py          # Boxer visualization pipeline
-    ├── video.py              # Video I/O utilities
-    ├── image.py              # Image utilities
     ├── file_io.py            # CSV I/O for OBBs and calibration
-    ├── condense_text.py      # Text embedder for semantic matching (uses OWLv2 CLIP encoder)
+    ├── image.py              # Image utilities + 3D/2D box rendering
+    ├── viz_boxer.py          # Interactive 3D visualization
+    ├── orbit_viewer.py       # Orbit-based 3D viewer
+    ├── gravity.py            # Gravity alignment utilities
     ├── taxonomy.py           # Label taxonomy definitions
-    ├── settings.py           # Global settings and constants
-    ├── demo_utils.py         # Demo helper functions
-    └── orbit_viewer.py       # Orbit-based 3D viewer
+    ├── demo_utils.py         # Demo helpers, paths, timing
+    └── video.py              # Video I/O utilities
 ```
 
 ## Tests

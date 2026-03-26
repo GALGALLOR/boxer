@@ -6,15 +6,16 @@
 import argparse
 import os
 
-from view_boxer import (
+from utils.viewer import (
     add_common_args,
     build_seq_ctx,
     launch_viewer,
     load_common,
-    read_obb_csv,
     resolve_bb2d_csv,
     subsample_timed_obbs,
+    TrackerViewer,
 )
+from utils.file_io import read_obb_csv
 
 
 def main():
@@ -25,7 +26,6 @@ def main():
     parser.add_argument("--init_follow_behind", type=float, default=None, help="Follow-view behind distance (meters)")
     parser.add_argument("--init_follow_above", type=float, default=None, help="Follow-view above distance (meters)")
     parser.add_argument("--init_follow_look_ahead", type=float, default=None, help="Follow-view look-ahead distance (meters)")
-    parser.add_argument("--init_overlay2d", action="store_true", help="Overlay 2D BBs on RGB panel")
     parser.add_argument("--init_show_obs", action="store_true", help="Initially show observed points")
     parser.add_argument("--autorecord", action="store_true")
     parser.add_argument("--record_fps", type=float, default=0.0, help="Recording FPS (0 = auto)")
@@ -39,12 +39,12 @@ def main():
         load_common(args)
     )
 
-    # Load OBBs — prefer tracked CSV if available
+    # Load OBBs
     tracked_csv = os.path.join(log_dir, f"{args.write_name}_3dbbs_tracked.csv")
     raw_csv = os.path.join(log_dir, f"{args.write_name}_3dbbs.csv")
     csv_path = tracked_csv if os.path.exists(tracked_csv) else raw_csv
-    if not os.path.exists(tracked_csv):
-        print(f"==> Tracked CSV not found, falling back to {csv_path}")
+    if not os.path.exists(csv_path):
+        raise IOError(f"3D BB CSV not found: {csv_path}")
 
     print(f"==> Loading OBBs from {csv_path}")
     timed_obbs = read_obb_csv(csv_path)
@@ -61,8 +61,6 @@ def main():
     init_w = args.window_w if args.window_w > 0 else default_w
     init_h = args.window_h if args.window_h > 0 else default_h
 
-    from utils.viz_boxer import TrackerViewer
-
     class Viewer(TrackerViewer):
         window_size = (init_w, init_h)
 
@@ -71,8 +69,7 @@ def main():
                 timed_obbs=timed_obbs,
                 root_path=log_dir,
                 seq_ctx=seq_ctx,
-                bb2d_csv_path=bb2d_csv_path if os.path.exists(bb2d_csv_path) else "",
-                freeze_tracker=False,
+                bb2d_csv_path=bb2d_csv_path,
                 init_rgb_text_scale=args.init_rgb_text_scale,
                 init_color_mode=args.init_color_mode,
                 init_follow=args.init_follow,

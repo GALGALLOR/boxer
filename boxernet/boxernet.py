@@ -130,12 +130,13 @@ class AttentionBlockV2(nn.Module):
 class AleHead(torch.nn.Module):
     """Aleatoric uncertainty head. Predicts 3D bounding boxes."""
 
-    def __init__(self, in_dim, out_dim=7, hidden_dim=128, norm_chamfer=False):
+    def __init__(self, in_dim, out_dim=7, hidden_dim=128, norm_chamfer=False, min_dim=0.05):
         super().__init__()
         self.in_dim = in_dim
         self.out_dim = out_dim
         self.bbox_min = 0.02
         self.bbox_max = 4.0
+        self.min_dim = min_dim
         self.norm_chamfer = norm_chamfer
         self.net = nn.Sequential(
             nn.Linear(in_dim, hidden_dim),
@@ -169,8 +170,12 @@ class AleHead(torch.nn.Module):
             torch.sigmoid(pr[..., 3:6]) * (self.bbox_max - self.bbox_min)
             + self.bbox_min
         )
-        bb3 = torch.zeros((B, M, 6)).to(device)
         hh, ww, dd = pr[:, :, 3], pr[:, :, 4], pr[:, :, 5]
+        if self.min_dim > 0:
+            hh = hh.clamp(min=self.min_dim)
+            ww = ww.clamp(min=self.min_dim)
+            dd = dd.clamp(min=self.min_dim)
+        bb3 = torch.zeros((B, M, 6)).to(device)
         bb3[:, :, 0] = -(hh / 2)
         bb3[:, :, 1] = hh / 2
         bb3[:, :, 2] = -(ww / 2)
@@ -495,47 +500,27 @@ def smart_load(model_dict, ckpt_dict):
             return f"{n / 1e3:.1f}K"
         return str(n)
 
-    print("=" * 50)
-    print("           CHECKPOINT LOAD SUMMARY")
-    print("=" * 50)
-    print(f"  Checkpoint: {total_ckpt} tensors, {fmt(total_ckpt_params)} params")
-    print(f"  Model:      {total_model} tensors, {fmt(total_model_params)} params")
-    print("-" * 50)
     load_pct = (
         100.0 * loaded_params / total_model_params if total_model_params > 0 else 0
     )
+    has_issues = shape_mismatch_count > 0 or missing_count > 0 or not_loaded_count > 0
     print(
-        f"  Loaded:          {loaded_count:4d} tensors, {fmt(loaded_params):>8s} params ({load_pct:.1f}%)"
+        f"==> Loaded checkpoint: {loaded_count}/{total_model} tensors, "
+        f"{fmt(loaded_params)}/{fmt(total_model_params)} params ({load_pct:.1f}%)"
     )
-    print(
-        f"  Shape mismatch:  {shape_mismatch_count:4d} tensors, {fmt(shape_mismatch_params):>8s} params"
-    )
-    print(
-        f"  Not in model:    {missing_count:4d} tensors, {fmt(missing_params):>8s} params"
-    )
-    print(
-        f"  Not from ckpt:   {not_loaded_count:4d} tensors, {fmt(not_loaded_params):>8s} params"
-    )
-    print("=" * 50)
-    if shape_mismatch_keys:
-        print("  Shape mismatches (first 20):")
-        for key, cs, ms in shape_mismatch_keys[:20]:
-            print(f"    {key}: ckpt={list(cs)} model={list(ms)}")
-        if len(shape_mismatch_keys) > 20:
-            print(f"    ... and {len(shape_mismatch_keys) - 20} more")
-    if missing_keys:
-        print("  Not in model (first 20):")
-        for key in missing_keys[:20]:
-            print(f"    {key}: {list(ckpt_dict[key].shape)}")
-        if len(missing_keys) > 20:
-            print(f"    ... and {len(missing_keys) - 20} more")
-    if not_loaded_keys:
-        print("  Not from ckpt (first 20):")
-        for key in not_loaded_keys[:20]:
-            print(f"    {key}: {list(model_dict[key].shape)}")
-        if len(not_loaded_keys) > 20:
-            print(f"    ... and {len(not_loaded_keys) - 20} more")
-    print("=" * 50)
+    if has_issues:
+        if shape_mismatch_count > 0:
+            print(f"  Shape mismatch: {shape_mismatch_count} tensors, {fmt(shape_mismatch_params)} params")
+            for key, cs, ms in shape_mismatch_keys[:20]:
+                print(f"    {key}: ckpt={list(cs)} model={list(ms)}")
+        if missing_count > 0:
+            print(f"  Not in model: {missing_count} tensors, {fmt(missing_params)} params")
+            for key in missing_keys[:20]:
+                print(f"    {key}: {list(ckpt_dict[key].shape)}")
+        if not_loaded_count > 0:
+            print(f"  Not from ckpt: {not_loaded_count} tensors, {fmt(not_loaded_params)} params")
+            for key in not_loaded_keys[:20]:
+                print(f"    {key}: {list(model_dict[key].shape)}")
     return new_ckpt_dict
 
 

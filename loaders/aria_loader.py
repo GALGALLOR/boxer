@@ -2,6 +2,7 @@
 import contextlib
 import os
 import sys
+import threading
 
 # Silence VRS/projectaria_tools logging before importing
 os.environ.setdefault("GLOG_minloglevel", "2")  # Suppress INFO and WARNING
@@ -481,6 +482,11 @@ class AriaLoader(BaseLoader):
         self.obb_projection_total = 0
         self.obb_projection_valid = 0
 
+        # Prefetch: load next frame in background thread
+        self._prefetch_result = None
+        self._prefetch_thread = None
+        self._start_prefetch()
+
     def _compute_valid_time_range(self):
         """Compute intersection of all enabled modality time ranges.
 
@@ -702,8 +708,7 @@ class AriaLoader(BaseLoader):
     def _single(self, idx, stream_id, timed_calibs):
         data, record = self.provider.get_image_data_by_index(stream_id, idx)
 
-        is_valid = data.is_valid()
-        if not is_valid:
+        if not data.is_valid():
             print("==> Warning: invalid image data")
             return False
         ts_ns = record.capture_timestamp_ns
@@ -713,43 +718,29 @@ class AriaLoader(BaseLoader):
         if not self.with_img:
             return output
 
-        is_valid = data.is_valid()
-        if not is_valid:
-            print("==> Warning: invalid image data")
-            return False
-        ts_ns = record.capture_timestamp_ns
-
         img = data.to_numpy_array()
         HH, WW = img.shape[0], img.shape[1]
         resize = self.resize
-        # print(f"==> image sizes are {HH}Hx{WW}W")
         if img.ndim == 2:
             img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
-        img_torch = torch.from_numpy(img).permute(2, 0, 1)[None].float()
-        img_torch = img_torch / 255.0  # to 0-1
+
+        # Determine target size
         if resize is None:
             resizeH = HH
             resizeW = WW
         elif isinstance(resize, tuple):
             resizeH = resize[0]
             resizeW = resize[1]
-            if not self.pinhole:  # Only resize here if NOT using pinhole
-                img_torch = torch.nn.functional.interpolate(
-                    img_torch,
-                    size=(resizeH, resizeW),
-                    mode="bilinear",
-                    align_corners=True,
-                )
         else:
             resizeH = resize
             resizeW = resize
-            if not self.pinhole:  # Only resize here if NOT using pinhole
-                img_torch = torch.nn.functional.interpolate(
-                    img_torch,
-                    size=(resizeH, resizeW),
-                    mode="bilinear",
-                    align_corners=True,
-                )
+
+        # Resize with cv2 on numpy (faster than torch interpolate on CPU)
+        if (resizeH != HH or resizeW != WW) and not self.pinhole:
+            img = cv2.resize(img, (resizeW, resizeH), interpolation=cv2.INTER_LINEAR)
+
+        img_torch = torch.from_numpy(img).permute(2, 0, 1)[None].float()
+        img_torch = img_torch / 255.0  # to 0-1
 
         if self.is_nebula:
             rotated = torch.tensor([False])
@@ -1061,6 +1052,24 @@ class AriaLoader(BaseLoader):
 
         return output
 
+    def _start_prefetch(self):
+        """Start prefetching the frame at self.index in a background thread."""
+        if self.index > self.end_index or self.count >= self.max_n:
+            return
+        idx = self.index
+        self._prefetch_result = None
+        self._prefetch_thread = threading.Thread(
+            target=self._prefetch_worker, args=(idx,), daemon=True
+        )
+        self._prefetch_thread.start()
+
+    def _prefetch_worker(self, idx):
+        """Background worker that loads a single frame."""
+        try:
+            self._prefetch_result = self.load(idx=idx)
+        except Exception as e:
+            self._prefetch_result = e
+
     def __next__(self):
         if self.index > self.end_index or self.count >= self.max_n:
             # Print OBB projection filtering summary
@@ -1070,7 +1079,24 @@ class AriaLoader(BaseLoader):
                     f"==> OBB projection filter summary: {self.obb_projection_valid}/{self.obb_projection_total} valid ({filtered} filtered)"
                 )
             raise StopIteration
-        out = self.load(idx=self.index)
+
+        # Wait for prefetched result
+        if self._prefetch_thread is not None:
+            self._prefetch_thread.join()
+            out = self._prefetch_result
+            self._prefetch_thread = None
+            self._prefetch_result = None
+        else:
+            out = self.load(idx=self.index)
+
+        # Re-raise exceptions from the worker thread
+        if isinstance(out, Exception):
+            raise out
+
         self.index += self.skip_n
         self.count += 1
+
+        # Kick off prefetch for the next frame
+        self._start_prefetch()
+
         return out
