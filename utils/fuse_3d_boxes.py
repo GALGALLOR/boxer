@@ -248,7 +248,7 @@ def precompute_semantic_embeddings(
 
     # Initialize model
     try:
-        from detectors.clip_tokenizer import TextEmbedder
+        from owl.clip_tokenizer import TextEmbedder
     except ImportError:
         raise ImportError("condense_text module not available")
 
@@ -1047,8 +1047,8 @@ def apply_nms_to_fused_instances(
                 continue
             if iou_matrix[i, j] > nms_iou_threshold:
                 # Get class names for debug output
-                class_i = instances[i].obb.text_string()[0]
-                class_j = instances[j].obb.text_string()[0]
+                class_i = instances[i].obb.text_string()
+                class_j = instances[j].obb.text_string()
 
                 # Remove instance with lower support count
                 if instances[i].support_count >= instances[j].support_count:

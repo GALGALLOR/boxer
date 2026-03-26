@@ -27,7 +27,7 @@ See [boxernet/BOXERNET.md](boxernet/BOXERNET.md) for architecture details.
 conda create -n boxer python=3.12
 conda activate boxer
 
-pip install torch opencv-python tqdm
+pip install 'torch>=2.0' opencv-python tqdm
 
 # Aria data (optional, for Project Aria sequences)
 pip install projectaria-tools
@@ -124,9 +124,10 @@ boxer/
 │   ├── alehead.py            # AleHead: 7-DoF OBB + uncertainty prediction head
 │   ├── attention_utils.py    # Transformer blocks (self/cross-attention)
 │   └── dinov3_wrapper.py     # DINOv3 backbone wrapper
-├── detectors/
+├── owl/
 │   ├── owl_wrapper.py        # OWLv2 open-vocabulary detector (JIT-traced, no transformers needed)
-│   └── clip_tokenizer.py     # Minimal CLIP BPE tokenizer
+│   ├── clip_tokenizer.py     # CLIP BPE tokenizer + text embedder
+│   └── export_owl.py         # One-time export script (requires transformers)
 ├── loaders/
 │   ├── base_loader.py        # Base loader interface
 │   ├── aria_loader.py        # Aria glasses data loader

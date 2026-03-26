@@ -173,7 +173,7 @@ class TextEmbedder:
         if not os.path.exists(_CKPT_PATH):
             raise FileNotFoundError(
                 f"OWLv2 checkpoint not found at {_CKPT_PATH}. "
-                "Run 'python detectors/export_owl.py' first."
+                "Run 'python owl/export_owl.py' first."
             )
         checkpoint = torch.load(_CKPT_PATH, map_location="cpu", weights_only=False)
         config = checkpoint["config"]

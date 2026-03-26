@@ -12,8 +12,8 @@ Requires: pip install transformers  (only for this test)
 import unittest
 
 import torch
-from detectors.clip_tokenizer import CLIPTokenizer
-from detectors.owl_wrapper import OwlWrapper
+from owl.clip_tokenizer import CLIPTokenizer
+from owl.owl_wrapper import OwlWrapper
 from utils.taxonomy import load_text_labels
 
 
@@ -191,7 +191,7 @@ class TestOwlWrapperStandalone(unittest.TestCase):
 
     def test_missing_models_error(self):
         """Verify helpful error when traced models are missing."""
-        import detectors.owl_wrapper as ow
+        import owl.owl_wrapper as ow
 
         original = ow._CKPT_PATH
         ow._CKPT_PATH = "/nonexistent/path/model.pt"
@@ -208,7 +208,7 @@ class TestTextEmbedder(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        from detectors.clip_tokenizer import TextEmbedder
+        from owl.clip_tokenizer import TextEmbedder
 
         cls.embedder = TextEmbedder()
 

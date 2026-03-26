@@ -4,8 +4,8 @@
 import os
 from typing import List, Union
 
-# Directory containing label files (detectors/ directory, sibling of utils/)
-_LABELS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "detectors")
+# Directory containing label files (owl/ directory, sibling of utils/)
+_LABELS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "owl")
 
 
 def load_text_labels(
@@ -70,8 +70,6 @@ BOXY_SEM2NAME = {
     31: "Stairs",
     32: "Anything",
 }
-BOXY_NAME2SEM = {val: key for key, val in BOXY_SEM2NAME.items()}
-
 
 SSI_SEM2NAME = {
     -1: "Invalid",
@@ -165,42 +163,6 @@ SSI_COLORS_ALT = {
     "Whiteboard": (0.20, 0.65, 0.15),
 }
 
-# Viridis colormap: uniformly spaced samples from matplotlib's viridis for each category.
-# Generated via: [matplotlib.cm.viridis(i / (N-1))[:3] for i in range(N)]
-# Categories ordered alphabetically for deterministic assignment.
-_VIRIDIS_CATEGORIES = sorted([k for k in SSI_COLORS.keys() if k not in ("Invalid",)])
-# Pre-sampled viridis values for 25 categories (N=25, uniform spacing).
-_VIRIDIS_25 = [
-    (0.267, 0.004, 0.329),
-    (0.283, 0.073, 0.397),
-    (0.282, 0.140, 0.458),
-    (0.268, 0.204, 0.505),
-    (0.244, 0.267, 0.535),
-    (0.217, 0.326, 0.551),
-    (0.191, 0.382, 0.556),
-    (0.166, 0.435, 0.557),
-    (0.144, 0.486, 0.553),
-    (0.127, 0.534, 0.545),
-    (0.120, 0.580, 0.533),
-    (0.134, 0.625, 0.512),
-    (0.178, 0.665, 0.480),
-    (0.243, 0.701, 0.440),
-    (0.319, 0.733, 0.394),
-    (0.402, 0.761, 0.343),
-    (0.490, 0.785, 0.287),
-    (0.581, 0.805, 0.226),
-    (0.672, 0.821, 0.162),
-    (0.761, 0.833, 0.104),
-    (0.845, 0.840, 0.068),
-    (0.920, 0.843, 0.066),
-    (0.978, 0.840, 0.118),
-    (0.993, 0.861, 0.217),
-    (0.993, 0.906, 0.144),
-]
-SSI_COLORS_VIRIDIS = {"Invalid": (0.40, 0.40, 0.40)}
-for _i, _name in enumerate(_VIRIDIS_CATEGORIES):
-    SSI_COLORS_VIRIDIS[_name] = _VIRIDIS_25[_i % len(_VIRIDIS_25)]
-
 TEXT2COLORS = {
     "unknown": (0.5, 0.5, 0.8),
     "couch": (0.1, 0.5, 0.1),
@@ -237,194 +199,3 @@ TEXT2COLORS = {
     "ceiling": (0.5, 1.0, 0.5),  # green
 }
 
-EVL_TAXONOMY_V1_5 = {  # id to (class, names)
-    0: (
-        "chair",
-        [
-            "chair",
-            "rocking chair",
-            "dining chair",
-            "deck chair",
-            "office chair",
-            "stool",
-            "ottoman",
-            "folding chair",
-            "foot stool",
-            "beanbag chair",
-            "barber chair",
-            "high chair",
-            "swing",
-            "massage chair",
-        ],
-    ),
-    1: (
-        "wallart",
-        [
-            "picture_frame",
-            "picture frame",
-            "wallart",
-            "wall_art",
-            "wall art",
-            "clock",
-            "mount",
-            "wall artwork",
-        ],
-    ),
-    2: ("sofa", ["sofa", "couch", "armchair", "reclining chair"]),
-    3: ("lamp", ["lamp", "light", "lighting"]),
-    4: ("window", ["window", "curtain", "window location", "window opening"]),
-    5: ("table", ["table", "chairtable", "side table", "desk"]),
-    6: ("bed", ["bed"]),
-    7: (
-        "detic",
-        ["detic"],
-    ),  # change "pillow" to "detic" since detic detects pillow too
-    8: ("floor_mat", ["floor_mat", "floor mat", "carpet", "rug", "area rug"]),
-    9: ("mirror", ["mirror", "reflective surface"]),
-    10: (
-        "plant",
-        ["plant", "flower_pot", "flower pot", "vase", "house plant", "christmas tree"],
-    ),
-    11: (
-        "storage",
-        [
-            "storage",
-            "dresser",
-            "cabinet",
-            "shelf",
-            "vanity",
-            "clothes_rack",
-            "clothes rack",
-            "cabinet",
-            "shelf",
-            "countertop",
-            "counter top",
-            "clothing",
-        ],
-    ),
-    12: ("container", ["container", "jar", "bottle", "bowl", "cup", "mug"]),
-    13: (
-        "door",
-        [
-            "door",
-            "sliding door",
-            "door location",
-            "door opening",
-            "sliding door opening",
-        ],
-    ),
-    14: (
-        "screen",
-        [
-            "screen",
-            "monitor",
-            "tv",
-            "laptop",
-            "television",
-            "computer monitor",
-            "computer laptop",
-            "laptop computer",
-        ],
-    ),
-    15: ("sink", ["sink"]),
-    16: ("toilet", ["toilet"]),
-    17: ("washerdryer", ["washerdryer", "washer", "dryer"]),
-    18: ("refrigerator", ["refrigerator", "refridgerator", "fridge"]),
-    19: (
-        "other_appliance",
-        [
-            "other_appliance",
-            "appliance",
-            "stove",
-            "air_conditioner",
-            "air conditioner",
-            "small appliance",
-            "large appliance",
-            "range",
-        ],
-    ),
-    20: (
-        "other_small_object",
-        [
-            "other_small_object",
-            "plate",
-            "exercise_weight",
-            "electronic_device",
-            "cutlery",
-            "battery_charger",
-            "candler_holder",
-            "food object",
-            "decorative accessory",
-            "fabric accessory",
-            "book",
-            "kitchen utensil",
-            "christmas decoration",
-        ],
-    ),
-    21: (
-        "other_medium_object",
-        [
-            "other_medium_object",
-            "computer",
-            "fan",
-            "unknown",
-            "living thing",
-            "trash can",
-            "decoration",
-            "decoration - other",
-            "object",
-            "object - other",
-            "unlabeled",
-        ],
-    ),
-    22: (
-        "other_big_object",
-        [
-            "other_big_object",
-            "cart",
-            "tent",
-            "ladder",
-            "island",
-            "fireplace",
-            "elevator",
-            "ghost",
-            "adacent room",
-            "room",
-            "dry erase board",
-            "whiteboard",
-            "reflective",
-            "garage door",
-            "garage door location",
-            "garage door opening",
-            "sliding door location",
-            "furniture",
-            "furniture - other",
-            "structural - other",
-        ],
-    ),
-}
-EVL_REMAP = {
-    0: 8,  # chair
-    1: 19,  # wallart
-    2: 7,  # sofa
-    3: 12,  # lamp
-    4: 6,  # window
-    5: 9,  # table
-    6: 11,  # bed
-    7: 32,  # detic->anything
-    8: 32,  # floor_mat->anything
-    9: 21,  # mirror
-    10: 13,  # plant
-    11: 14,  # storage
-    12: 32,  # container->anything
-    13: 5,  # door
-    14: 10,  # screen
-    15: 27,  # sink
-    16: 28,  # toilet
-    17: 29,  # washerdryer
-    18: 17,  # refrigerator
-    19: 32,  # other_appliance->anything
-    20: 32,  # other_small_object->anything
-    21: 32,  # other_medium_object->anything
-    22: 32,  # other_big_object->anything
-}

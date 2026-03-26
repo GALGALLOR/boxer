@@ -4,7 +4,7 @@ import os
 
 import torch
 import torch.nn.functional as F
-from detectors.clip_tokenizer import CLIPTokenizer
+from owl.clip_tokenizer import CLIPTokenizer
 from utils.taxonomy import load_text_labels
 
 DEFAULT_TEXT_LABELS = load_text_labels("lvisplus")

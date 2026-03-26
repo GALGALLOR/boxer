@@ -1,11 +1,9 @@
 #!/usr/bin/env python3
 # pyre-strict
 
-import argparse
 import colorsys
 import hashlib
 import os
-import sys
 import tempfile
 import time as time_module
 from bisect import bisect_left, bisect_right
@@ -15,12 +13,6 @@ from typing import Any, Dict, Optional, Tuple
 
 import cv2
 import torch
-
-# NOTE(dd): When run as main script, prevent moderngl-window from consuming
-# argparse flags intended for viz_boxer's own parser.
-if __name__ == "__main__":
-    original_argv = sys.argv.copy()
-    sys.argv = [sys.argv[0]]
 
 import imgui
 import matplotlib.cm as cm
@@ -49,11 +41,9 @@ from utils.video import make_mp4
 
 
 # Color mode constants
-COLOR_MODE_SEMANTIC = 0
-COLOR_MODE_PCA = 1
-COLOR_MODE_PROBABILITY = 2
-COLOR_MODE_SEMANTIC_ALT = 3
-COLOR_MODE_RANDOM = 4
+COLOR_MODE_PCA = 0
+COLOR_MODE_PROBABILITY = 1
+COLOR_MODE_RANDOM = 2
 
 
 def _normalize_color_mode_name(name: str) -> str:
@@ -63,11 +53,9 @@ def _normalize_color_mode_name(name: str) -> str:
 def _fuse_color_mode_from_name(name: str) -> Optional[int]:
     key = _normalize_color_mode_name(name)
     mapping = {
-        "semantic": COLOR_MODE_SEMANTIC,
         "pca": COLOR_MODE_PCA,
         "prob": COLOR_MODE_PROBABILITY,
         "probability": COLOR_MODE_PROBABILITY,
-        "semantic_alt": COLOR_MODE_SEMANTIC_ALT,
         "random": COLOR_MODE_RANDOM,
     }
     return mapping.get(key)
@@ -390,19 +378,9 @@ class OBBViewer(OrbitViewer):
             tracked_visible=tracked_visible,
         )
 
-    def _compute_rgb_panel_width(self, win_w: int, panel_h: int) -> int:
-        """Compute right RGB panel width as a fraction of window width."""
-        if self._rgb_texture is None or not self.show_rgb:
-            return 0
-        return int(win_w * self.rgb_panel_max_frac)
-
     def _get_3d_viewport_size(self) -> tuple[int, int]:
-        """Return (width, height) of 3D viewport (right of controls + RGB panels)."""
+        """Return (width, height) of 3D viewport (right of controls panel)."""
         w, h = self.wnd.size
-        ui_w = self.ui_panel_width
-        panel_w = self._compute_rgb_panel_width(w, h)
-        if panel_w > 0:
-            return max(1, w - ui_w - panel_w), h
         return w, h
 
     def get_camera_matrices(self):
@@ -431,18 +409,12 @@ class OBBViewer(OrbitViewer):
         all_obbs: ObbTW,
         root_path: str,
         timed_obbs: dict[int, ObbTW] | None = None,
-        loader_max_frames: int = 0,
-        loader_start_frame: int = 0,
-        init_rgb_text_scale: Optional[float] = None,
         init_color_mode: Optional[str] = None,
         init_image_panel_width: Optional[float] = None,
         skip_precompute: bool = False,
         load_view_data: dict | None = None,
         view_save_path: str = "",
         seq_name: str = "",
-        scannet_scene: str | None = None,
-        scannet_annotation_path: str = "~/data/scannet/full_annotations.json",
-        seq_ctx: dict | None = None,
         **kwargs: Any,
     ) -> None:
         """Initialize viewer with a single ObbTW tensor containing all detections.
@@ -455,10 +427,7 @@ class OBBViewer(OrbitViewer):
                 per frame and doesn't need embeddings at startup.
             load_view_data: Optional dict with saved camera state to restore
             view_save_path: Path to save camera view .pt files
-            seq_ctx: Pre-built sequence context dict. When provided, skips
-                _load_sequence_context_auto() and uses this context directly.
         """
-        self._prebuilt_seq_ctx = seq_ctx
         t_init0 = time_module.perf_counter()
         _startup_log(f"OBBViewer init start (seq={seq_name})")
         self.all_obbs = all_obbs  # Single ObbTW tensor with all detections
@@ -474,15 +443,11 @@ class OBBViewer(OrbitViewer):
             else:
                 print(
                     f"Warning: unknown --init_color_mode='{init_color_mode}' "
-                    "(valid: semantic, pca, prob, semantic_alt, random)"
+                    "(valid: pca, prob, random)"
                 )
         self.prob_threshold = 0.55  # Probability threshold for filtering
         self.root_path = root_path  # Root path for saving results
         self.seq_name = seq_name  # Sequence name for boxy_data lookup
-        self.scannet_scene = scannet_scene
-        self.scannet_annotation_path = scannet_annotation_path
-        self._loader_max_frames = int(loader_max_frames)
-        self._loader_start_frame = int(loader_start_frame)
         if timed_obbs is not None:
             self.timed_obbs = timed_obbs
         elif not hasattr(self, "timed_obbs"):
@@ -493,10 +458,6 @@ class OBBViewer(OrbitViewer):
         self.is_playing = False
         self.playback_fps = 10.0
         self._last_step_time = 0.0
-        self.rgb_panel_max_frac = 0.45
-        if init_image_panel_width is not None:
-            self.rgb_panel_max_frac = float(init_image_panel_width)
-        self._handle_playback_in_base = True
         self._last_render_mvp: Optional[np.ndarray] = None
 
         # Fusion state
@@ -578,86 +539,6 @@ class OBBViewer(OrbitViewer):
         self._pca_model: Optional[object] = None
         self._all_embeddings: Optional[torch.Tensor] = None
 
-        # RGB video panel state (mirrors tracker behavior)
-        self._rgb_texture = None
-        self._rgb_tex_size = (0, 0)
-        self.show_rgb = True
-        if not hasattr(self, "_data_source"):
-            self._data_source = "ca1m" if seq_name.startswith("ca1m") else "aria"
-        if not hasattr(self, "_scannet_scene_dir"):
-            self._scannet_scene_dir: Optional[str] = None
-        if not hasattr(self, "_scannet_frame_ids"):
-            self._scannet_frame_ids: Optional[list[str]] = None
-        self._rgb_lru_cache: OrderedDict[int, np.ndarray] = OrderedDict()
-        self._rgb_lru_max_items = 32
-        if not hasattr(self, "_loader"):
-            self._loader = None
-        self._rgb_img_scale: float = 1.0
-        self._rgb_vrs_h: int = 0
-        self._rgb_vrs_w: int = 0
-        if not hasattr(self, "_vrs_is_nebula"):
-            self._vrs_is_nebula = False
-        if not hasattr(self, "_rgb_timestamps"):
-            self._rgb_timestamps = np.array([])
-        self.show_rgb_obbs = True
-        self.show_rgb_raw = False
-        self.show_rgb_tracked_all = False
-        self.show_rgb_tracked_visible = True
-        self.rgb_obb_thickness = 3.0
-        self.show_rgb_labels = True
-        self.rgb_text_scale = 1.4
-        if init_rgb_text_scale is not None:
-            self.rgb_text_scale = float(init_rgb_text_scale)
-        self._rgb_label_fonts: dict[float, Any] = {}
-        self._rgb_projected_raw_lines: list[
-            tuple[np.ndarray, np.ndarray, np.ndarray]
-        ] = []
-        self._rgb_projected_tracked_all_lines: list[
-            tuple[np.ndarray, np.ndarray, np.ndarray]
-        ] = []
-        self._rgb_projected_tracked_visible_lines: list[
-            tuple[np.ndarray, np.ndarray, np.ndarray]
-        ] = []
-        self._rgb_projected_labels: list[tuple] = []
-        self._rgb_projected_tracked_all_labels: list[tuple[float, float, str]] = []
-        self._rgb_projected_tracked_visible_labels: list[tuple[float, float, str]] = []
-
-        # Pose/calibration for projecting 3DBBs into RGB image
-        if not hasattr(self, "traj"):
-            self.traj = None
-        if not hasattr(self, "pose_ts"):
-            self.pose_ts = np.array([])
-        if not hasattr(self, "calibs"):
-            self.calibs = None
-        if not hasattr(self, "calib_ts"):
-            self.calib_ts = np.array([])
-        # RGB overlay color cache (avoid expensive semantic color recompute/frame)
-        self._rgb_tracked_all_color_cache: Optional[np.ndarray] = None
-        self._rgb_tracked_all_color_mode_cache: Optional[int] = None
-        self._rgb_tracked_all_cache_epoch = 0
-        self._rgb_tracked_all_cache_epoch_used = -1
-        self._sem2color_cache_std = None
-        self._sem2color_cache_alt = None
-        self._render_navigation_overlays_in_base = True
-
-        # Navigation overlays (trajectory + frustum)
-        self.show_trajectory = True
-        self.traj_alpha = 1.0
-        self.traj_tail_secs = 3.0
-        self.show_frustum = True
-        self.frustum_scale = 0.1
-        self.traj_instance_vbo = None
-        self.traj_instance_vao = None
-        self.traj_instance_count = 0
-        self._traj_all_segments = None
-        self._traj_seg_ts = None
-        self.frustum_instance_vbo = None
-        self.frustum_instance_vao = None
-        self.frustum_instance_count = 0
-        self.outline_instance_vbo = None
-        self.outline_instance_vao = None
-        self.outline_instance_count = 0
-
         # Compute semantic embeddings for ALL detections upfront BEFORE initializing scene
         # (needed because init_scene() -> _build_geometry_cache() uses embeddings)
         self._skip_precompute = skip_precompute
@@ -678,64 +559,6 @@ class OBBViewer(OrbitViewer):
         self.bg_color_index = 0  # White background
         self._apply_visual_theme()
 
-        # Load sequence context (RGB/traj/calib) unless subclass already provided it.
-        has_rgb_timeline = len(getattr(self, "_rgb_timestamps", np.array([]))) > 0
-        has_preloaded_context = (
-            has_rgb_timeline and (self.traj is not None) and (self.calibs is not None)
-        )
-        if self.total_frames > 0 and not has_preloaded_context:
-            try:
-                t_ctx0 = time_module.perf_counter()
-                if self._prebuilt_seq_ctx is not None:
-                    seq_ctx = self._prebuilt_seq_ctx
-                else:
-                    seq_ctx = _load_sequence_context_auto(
-                        seq_name=seq_name,
-                        scannet_scene=self.scannet_scene,
-                        scannet_annotation_path=self.scannet_annotation_path,
-                        with_sdp=False,
-                        start_frame=max(0, self._loader_start_frame),
-                        max_frames=(
-                            self._loader_max_frames
-                            if self._loader_max_frames > 0
-                            else self.total_frames
-                        ),
-                    )
-                self._data_source = seq_ctx.get("source", "aria")
-                source_name = {
-                    "ca1m": "CALoader",
-                    "scannet": "ScanNetLoader",
-                }.get(self._data_source, "AriaLoader")
-                print("Data source: " + source_name)
-                self._loader = seq_ctx.get("loader", None)
-                self._scannet_scene_dir = seq_ctx.get("scannet_scene_dir", None)
-                self._rgb_num_frames = seq_ctx["rgb_num_frames"]
-                self._rgb_timestamps = seq_ctx["rgb_timestamps"]
-                self._rgb_images = seq_ctx.get("rgb_images", None)
-                self._vrs_is_nebula = seq_ctx["is_nebula"]
-                self.traj = seq_ctx["traj"]
-                self.pose_ts = seq_ctx["pose_ts"]
-                self.calibs = seq_ctx["calibs"]
-                self.calib_ts = seq_ctx["calib_ts"]
-                ts0 = self.sorted_timestamps[0]
-                rgb0 = self._load_rgb_for_timestamp(ts0)
-                if rgb0 is not None:
-                    self._upload_rgb_texture(rgb0)
-                self._rebuild_rgb_projections()
-                _startup_log(
-                    f"OBBViewer sequence context applied in {(time_module.perf_counter() - t_ctx0):.2f}s"
-                )
-            except Exception as e:
-                print(f"Warning: failed to initialize RGB panel via AriaLoader: {e}")
-                self._rgb_images = None
-        if self.show_rgb and self._rgb_texture is None and self.total_frames > 0:
-            ts0 = self.sorted_timestamps[0]
-            rgb0 = self._load_rgb_for_timestamp(ts0)
-            if rgb0 is not None:
-                self._upload_rgb_texture(rgb0)
-
-        # Build trajectory overlay geometry once (GL context ready after super init)
-        self._build_trajectory_geometry()
         if self.total_frames > 0:
             self._step_to_frame(self.current_frame_idx)
 
@@ -776,7 +599,8 @@ class OBBViewer(OrbitViewer):
                 self._build_geometry_cache()
             if getattr(self, "tracked_all_instances", None) and hasattr(self.tracked_all_instances[0], "obb"):
                 self._build_tracked_all_geometry()
-            self._rgb_tracked_all_color_cache = None
+            if hasattr(self, "_rgb_tracked_all_color_cache"):
+                self._rgb_tracked_all_color_cache = None
             if hasattr(self, "_rebuild_rgb_projections"):
                 self._rebuild_rgb_projections()
         if hasattr(self, "track_color_mode") and self.track_color_mode == 4:
@@ -880,30 +704,6 @@ class OBBViewer(OrbitViewer):
         torch.save(view_data, self.view_save_path)
         print(f"Saved camera view to {self.view_save_path}")
 
-    def _get_rgb_label_font(self) -> Any:
-        """Return cached ImGui font for current RGB text scale (larger glyphs)."""
-        scale = max(0.5, float(self.rgb_text_scale))
-        key = round(scale, 2)
-        if key in self._rgb_label_fonts:
-            return self._rgb_label_fonts[key]
-        size_px = max(10.0, 16.0 * key)
-        io = imgui.get_io()
-        font_paths = [
-            "/System/Library/Fonts/Supplemental/Arial.ttf",
-            "/System/Library/Fonts/Supplemental/Helvetica.ttc",
-            "/System/Library/Fonts/SFNS.ttf",
-        ]
-        for p in font_paths:
-            if os.path.exists(p):
-                try:
-                    fnt = io.fonts.add_font_from_file_ttf(p, size_px)
-                    self.imgui.refresh_font_texture()
-                    self._rgb_label_fonts[key] = fnt
-                    return fnt
-                except Exception:
-                    continue
-        # Fallback: no custom font available
-        return None
 
     def _save_screenshot(self) -> None:
         """Save the current framebuffer as a PNG image."""
@@ -1233,22 +1033,7 @@ class OBBViewer(OrbitViewer):
         tracked_all_obbs = torch.stack(tracked_all_obbs_list)
 
         # Get colors based on color mode (SAME logic as raw detections)
-        if self.color_mode in (COLOR_MODE_SEMANTIC, COLOR_MODE_SEMANTIC_ALT):
-            # Use semantic color mapping (keyed by sem_id)
-            use_alt = self.color_mode == COLOR_MODE_SEMANTIC_ALT
-            color_map = self._create_color_map(use_alt=use_alt)
-            sem_ids = tracked_all_obbs.sem_id.squeeze(-1).tolist()
-            colors_np = np.array(
-                [
-                    color_map.get(sem_id, np.array([0.5, 0.5, 0.5]))
-                    for sem_id in sem_ids
-                ],
-                dtype=np.float32,
-            )
-            colors = (
-                torch.from_numpy(colors_np).float().to(tracked_all_obbs.device)
-            )  # (N, 3)
-        elif self.color_mode == COLOR_MODE_PCA:
+        if self.color_mode == COLOR_MODE_PCA:
             # Fused instances are new OBBs not in original cache, so compute embeddings directly
             # Use standalone function to compute embeddings
             from utils.fuse_3d_boxes import precompute_semantic_embeddings
@@ -1358,20 +1143,7 @@ class OBBViewer(OrbitViewer):
         probs = self.all_obbs.prob.squeeze()  # (N,)
 
         # Get colors based on color mode
-        if self.color_mode in (COLOR_MODE_SEMANTIC, COLOR_MODE_SEMANTIC_ALT):
-            # Use semantic color mapping (keyed by sem_id)
-            use_alt = self.color_mode == COLOR_MODE_SEMANTIC_ALT
-            color_map = self._create_color_map(use_alt=use_alt)
-            sem_ids = self.all_obbs.sem_id.squeeze(-1).tolist()
-            colors_np = np.array(
-                [
-                    color_map.get(sem_id, np.array([0.5, 0.5, 0.5]))
-                    for sem_id in sem_ids
-                ],
-                dtype=np.float32,
-            )
-            colors = torch.from_numpy(colors_np).float().to(corners.device)  # (N, 3)
-        elif self.color_mode == COLOR_MODE_PCA:
+        if self.color_mode == COLOR_MODE_PCA:
             # Use PCA color mapping with cached embeddings
             embeddings = self._get_semantic_embeddings(self.all_obbs)
             colors = self._create_pca_colors_from_embeddings(embeddings)
@@ -1538,79 +1310,6 @@ class OBBViewer(OrbitViewer):
             ],
         )
 
-    def _create_color_map(self, use_alt: bool = False):
-        """Create a color mapping for sem_ids using semantic matching with BOXY_SEM2NAME.
-
-        Also sets the sem_id on all_obbs based on the semantic matching with BOXY_SEM2NAME.
-        Returns a dict mapping sem_id -> RGB color.
-        """
-        color_map = {}
-
-        # Get embeddings for all texts using the cached model
-        embeddings = self._get_semantic_embeddings(self.all_obbs)
-
-        # Encode BOXY_SEM2NAME values using a local model instance
-        from detectors.clip_tokenizer import TextEmbedder
-
-        model = TextEmbedder()
-
-        # Build lists from BOXY_SEM2NAME (skip Invalid sem_id -1)
-        sem_id_list = [sem_id for sem_id in BOXY_SEM2NAME.keys() if sem_id >= 0]
-        name_list = [BOXY_SEM2NAME[sem_id] for sem_id in sem_id_list]
-
-        boxy_embs = model.forward(name_list)
-
-        # Also encode TEXT2COLORS for color lookup
-        text_color_names = list(TEXT2COLORS.keys())
-        text_color_values = list(TEXT2COLORS.values())
-        text_color_embs = model.forward(text_color_names)
-
-        # Match each text to the closest BOXY_SEM2NAME class using cosine similarity
-        text_strings = self.all_obbs.text_string()
-        sem_ids = torch.zeros(len(text_strings), dtype=torch.int32)
-
-        for i, _text in enumerate(text_strings):
-            # Get embedding for this text
-            emb = embeddings[i].unsqueeze(0)  # (1, D)
-
-            # Compute cosine similarity with BOXY_SEM2NAME embeddings
-            dist = torch.mm(boxy_embs, emb.t()).squeeze()  # (N,)
-            dist_np = dist.detach().cpu().numpy()
-            closest = int(np.argmax(dist_np))
-            closest_dist = float(dist_np[closest])
-
-            # Assign sem_id based on semantic matching
-            if closest_dist > 0.5:
-                matched_sem_id = sem_id_list[closest]
-            else:
-                matched_sem_id = 32  # "Anything" for low confidence matches
-
-            sem_ids[i] = matched_sem_id
-
-            # Also compute color for this sem_id
-            if matched_sem_id not in color_map:
-                matched_name = BOXY_SEM2NAME[matched_sem_id]
-                if use_alt:
-                    # Direct lookup from SSI_COLORS_ALT (darker colors for white bg)
-                    color_map[matched_sem_id] = np.array(
-                        SSI_COLORS_ALT.get(matched_name, SSI_COLORS_ALT["Anything"]),
-                        dtype=np.float32,
-                    )
-                else:
-                    # Use the matched BOXY name to find color via TEXT2COLORS
-                    name_emb = model.forward([matched_name])
-                    color_dist = torch.mm(text_color_embs, name_emb.t()).squeeze()
-                    color_dist_np = color_dist.detach().cpu().numpy()
-                    color_closest = int(np.argmax(color_dist_np))
-                    color_map[matched_sem_id] = np.array(
-                        text_color_values[color_closest], dtype=np.float32
-                    )
-
-        # Set sem_ids on all_obbs
-        self.all_obbs.set_sem_id(sem_ids)
-
-        return color_map
-
     def _create_pca_colors_from_embeddings(
         self, embeddings: torch.Tensor, use_cached_pca: bool = False
     ) -> torch.Tensor:
@@ -1709,6 +1408,766 @@ class OBBViewer(OrbitViewer):
         ]  # Flip Y for screen coords
 
         return (screen_x, screen_y, True)
+
+
+
+    def _step_to_frame(self, target_idx: int) -> None:
+        """Seek to frame index and update frame OBB sets."""
+        if self.total_frames == 0:
+            return
+        target_idx = max(0, min(target_idx, self.total_frames - 1))
+        self.current_frame_idx = target_idx
+        ts = self.sorted_timestamps[target_idx]
+        self._set_frame_obb_sets(raw=self.timed_obbs.get(ts))
+
+
+    def _step_forward(self) -> None:
+        if self.current_frame_idx < self.total_frames - 1:
+            self._step_to_frame(self.current_frame_idx + 1)
+
+
+
+
+
+
+
+
+
+    def on_key_event(self, key, action, modifiers):
+        """Keyboard shortcuts for RGB playback."""
+        super().on_key_event(key, action, modifiers)
+        if action != self.wnd.keys.ACTION_PRESS:
+            return
+
+        if key == self.wnd.keys.SPACE:
+            if self.current_frame_idx >= self.total_frames - 1:
+                self._step_to_frame(0)
+                self.is_playing = True
+            else:
+                self.is_playing = not self.is_playing
+            self._last_step_time = time_module.time()
+        elif key == self.wnd.keys.RIGHT:
+            self.is_playing = False
+            self._step_forward()
+        elif key == self.wnd.keys.LEFT:
+            self.is_playing = False
+            self._step_to_frame(self.current_frame_idx - 1)
+
+    def _render_text_labels(self) -> None:
+        """Render text labels for fused boxes in screen space."""
+        if not self.show_text_labels or not self.tracked_all_label_positions:
+            return
+
+        # Get camera matrices and viewport
+        _projection, _view, mvp = self.get_camera_matrices()
+        full_w, full_h = self.wnd.size
+        w, h = self._get_3d_viewport_size()
+        vp_x = full_w - w  # viewport x offset (panels on left)
+
+        # Convert Matrix44 to numpy array
+        mvp_array = np.array(mvp, dtype=np.float32)
+
+        text_col = imgui.get_color_u32_rgba(1.0, 1.0, 1.0, 1.0)
+        draw_list = imgui.get_foreground_draw_list()
+
+        # Render each text label at each fused box position
+        for i, pos_3d in enumerate(self.tracked_all_label_positions):
+            # Get the text label for this fused instance
+            text = self.tracked_all_text_labels[i]
+
+            # Project 3D position to screen
+            screen_x, screen_y, is_visible = self._project_to_screen(
+                np.array(pos_3d), mvp_array, (w, h)
+            )
+
+            if not is_visible:
+                continue
+
+            # Offset screen_x by viewport origin (panels on left)
+            screen_x += vp_x
+
+            # Skip if label would overlap with UI controls panel
+            if screen_x < vp_x + self.ui_panel_width:
+                continue
+
+            # Add small offset so text doesn't overlap with box center
+            text_x = screen_x + 10
+            text_y = screen_y - 10
+
+            # Compute dimensions if enabled
+            if self.show_dimensions and i < len(self.tracked_all_instances):
+                obb = self.tracked_all_instances[i].obb
+                corners = obb.bb3corners_world.cpu().numpy().squeeze()  # (8, 3)
+                x_dim = np.linalg.norm(corners[1] - corners[0])  # Width
+                y_dim = np.linalg.norm(corners[3] - corners[0])  # Height
+                z_dim = np.linalg.norm(corners[4] - corners[0])  # Depth
+                display_text = f"{text} ({y_dim:.2f}x{x_dim:.2f}x{z_dim:.2f})"
+            else:
+                display_text = text
+
+            # Background color: darkened OBB color (matches 2D BB style)
+            if i < len(self.tracked_all_label_colors):
+                c = self.tracked_all_label_colors[i]
+                bg_col = imgui.get_color_u32_rgba(
+                    float(c[0]) * 0.4, float(c[1]) * 0.4, float(c[2]) * 0.4, 0.6
+                )
+            else:
+                br, bg_, bb, ba = self.overlay_text_bg_rgba
+                bg_col = imgui.get_color_u32_rgba(br, bg_, bb, ba)
+
+            tw, th = imgui.calc_text_size(display_text)
+            draw_list.add_rect_filled(
+                text_x - 2, text_y - 1, text_x + tw + 2, text_y + th + 1, bg_col
+            )
+            draw_list.add_text(text_x, text_y, text_col, display_text)
+
+    def render_3d(self, time: float, frame_time: float) -> None:
+        """Render all OBBs using instanced quad rendering for thick lines."""
+        # Playback auto-advance
+        if self.is_playing and self.total_frames > 0:
+            now = time_module.time()
+            if now - self._last_step_time >= 1.0 / max(self.playback_fps, 0.1):
+                self._last_step_time = now
+                self._step_forward()
+
+        full_w, h = self.wnd.size
+
+        # Split viewport: panels on left, 3D on right
+        w, h = self._get_3d_viewport_size()
+        vp_x = full_w - w
+        self.ctx.viewport = (vp_x, 0, w, h)
+        self.ctx.scissor = (vp_x, 0, w, h)
+
+        # Get camera matrices and viewport (match active 3D area)
+        _projection, _view, mvp = self.get_camera_matrices()
+        self._last_render_mvp = np.asarray(mvp, dtype=np.float32).copy()
+
+        # Disable depth testing for line rendering (lines render on top)
+        self.ctx.disable(self.ctx.DEPTH_TEST)
+
+        # Render original detections with instanced quads
+        if self.show_raw_set and self.cached_instance_vao is not None:
+            self.line_prog["mvp"].write(mvp.astype("f4").tobytes())
+            self.line_prog["alpha"].write(np.array(self.alpha, dtype="f4").tobytes())
+            self.line_prog["prob_threshold"].write(
+                np.array(self.prob_threshold, dtype="f4").tobytes()
+            )
+            self.line_prog["line_width"].value = float(self.raw_line_width)
+            self.line_prog["viewport_size"].write(
+                np.array([w, h], dtype="f4").tobytes()
+            )
+            self.cached_instance_vao.render(
+                mode=self.ctx.TRIANGLES, instances=self.cached_instance_count
+            )
+
+        # Render fused instances with instanced quads
+        if self.show_tracked_all_set and self.tracked_all_instance_vao is not None:
+            self.line_prog["mvp"].write(mvp.astype("f4").tobytes())
+            self.line_prog["alpha"].write(np.array(1.0, dtype="f4").tobytes())
+            self.line_prog["prob_threshold"].write(np.array(0.0, dtype="f4").tobytes())
+            self.line_prog["line_width"].value = float(self.tracked_all_line_width)
+            self.line_prog["viewport_size"].write(
+                np.array([w, h], dtype="f4").tobytes()
+            )
+            self.tracked_all_instance_vao.render(
+                mode=self.ctx.TRIANGLES, instances=self.tracked_all_instance_count
+            )
+
+        # Render visible tracked subset with thicker lines
+        if self.show_tracked_visible_set and getattr(self, "outline_instance_vao", None) is not None:
+            self.line_prog["mvp"].write(mvp.astype("f4").tobytes())
+            self.line_prog["alpha"].write(np.array(1.0, dtype="f4").tobytes())
+            self.line_prog["prob_threshold"].write(np.array(0.0, dtype="f4").tobytes())
+            self.line_prog["line_width"].value = float(
+                getattr(self, "visible_line_width", self.tracked_all_line_width + 2)
+            )
+            self.line_prog["viewport_size"].write(
+                np.array([w, h], dtype="f4").tobytes()
+            )
+            self.outline_instance_vao.render(
+                mode=self.ctx.TRIANGLES, instances=self.outline_instance_count
+            )
+
+        # Render axis lines (RGB for XYZ) when enabled
+        if self.show_axis_lines and self.axis_instance_vao is not None:
+            self.line_prog["mvp"].write(mvp.astype("f4").tobytes())
+            self.line_prog["alpha"].write(np.array(1.0, dtype="f4").tobytes())
+            self.line_prog["prob_threshold"].write(
+                np.array(self.prob_threshold, dtype="f4").tobytes()
+            )
+            self.line_prog["line_width"].value = float(self.tracked_all_line_width)
+            self.line_prog["viewport_size"].write(
+                np.array([w, h], dtype="f4").tobytes()
+            )
+            self.axis_instance_vao.render(
+                mode=self.ctx.TRIANGLES, instances=self.axis_instance_count
+            )
+
+        # Restore full viewport for imgui rendering
+        self.ctx.viewport = (0, 0, full_w, h)
+        self.ctx.scissor = None
+
+    def render_ui(self) -> None:
+        """Render ImGui UI panel."""
+        # Render text labels for fused boxes (before UI panels so they appear behind)
+        if self.show_tracked_all_set:
+            self._render_text_labels()
+
+        # Get current window size dynamically
+        w, h = self.wnd.size
+
+        imgui.set_next_window_position(0, 0, imgui.ONCE)
+        imgui.set_next_window_size(450, h, imgui.ALWAYS)  # Always match window height
+
+        imgui.begin("OBB Controls", flags=imgui.WINDOW_NO_MOVE | imgui.WINDOW_NO_RESIZE)
+
+        # Render all the main controls
+        self._render_main_controls()
+        imgui.end()
+
+    def _render_common_visual_controls(
+        self,
+        *,
+        raw_checkbox_label: str = "Raw",
+        tracked_all_checkbox_label: str = "Show Tracked All",
+        tracked_all_line_label: str = "Tracked All Line Width",
+        show_visible_checkbox: bool = True,
+        show_visible_line_width: bool = False,
+        show_sets_header: bool = True,
+    ) -> None:
+        """Render visualization controls for pure 3D box rendering."""
+        imgui.push_item_width(200)
+        _theme_changed, self.visual_theme_mode = imgui.combo(
+            "Theme", self.visual_theme_mode, ["Light", "Dark"]
+        )
+        if _theme_changed:
+            self._apply_visual_theme()
+            if self.color_mode == COLOR_MODE_RANDOM:
+                self._build_geometry_cache()
+                if self.tracked_all_instances:
+                    self._build_tracked_all_geometry()
+        imgui.pop_item_width()
+
+        if show_sets_header:
+            imgui.text("OBB Sets")
+        _changed, self.show_raw_set = imgui.checkbox(raw_checkbox_label, self.show_raw_set)
+        _changed, self.show_tracked_all_set = imgui.checkbox(
+            tracked_all_checkbox_label, self.show_tracked_all_set
+        )
+        if show_visible_checkbox:
+            _changed, self.show_tracked_visible_set = imgui.checkbox(
+                "Tracked Visible", self.show_tracked_visible_set
+            )
+        _changed, self.show_text_labels = imgui.checkbox(
+            "Show Labels", self.show_text_labels
+        )
+        if hasattr(self, "show_dimensions"):
+            _changed, self.show_dimensions = imgui.checkbox(
+                "Show Dimensions", self.show_dimensions
+            )
+        _changed, self.show_axis_lines = imgui.checkbox(
+            "Show Axis Lines (RGB=XYZ)", self.show_axis_lines
+        )
+
+        imgui.push_item_width(200)
+        _changed, self.alpha = imgui.slider_float(
+            "Detection Alpha", self.alpha, 0.0, 1.0
+        )
+        _changed, self.raw_line_width = imgui.slider_int(
+            "Raw Line Width", self.raw_line_width, 1, 10
+        )
+        _changed, self.tracked_all_line_width = imgui.slider_int(
+            tracked_all_line_label, self.tracked_all_line_width, 1, 10
+        )
+        if show_visible_line_width and hasattr(self, "visible_line_width"):
+            _changed, self.visible_line_width = imgui.slider_int(
+                "Visible Line Width", self.visible_line_width, 1, 10
+            )
+        imgui.pop_item_width()
+        imgui.separator()
+
+    def _section_header(self, title: str) -> None:
+        """Draw a consistent section header in the left control panel."""
+        imgui.separator()
+        imgui.text(title)
+        imgui.separator()
+
+    def _render_fusion_controls(self) -> None:
+        """Render fusion section UI (reusable by both OBBViewer and TrackerViewer)."""
+        self._section_header("Fusion")
+
+        # Check if fusion parameters are out of date
+        fusion_out_of_date = (
+            self._last_fusion_iou_threshold != self.fusion_iou_threshold
+            or self._last_fusion_min_detections != self.fusion_min_detections
+            or self._last_fusion_confidence_weighting
+            != self.fusion_confidence_weighting
+            or self._last_fusion_samp_per_dim != self.fusion_samp_per_dim
+            or self._last_fusion_semantic_threshold != self.fusion_semantic_threshold
+            or self._last_fusion_enable_nms != self.fusion_enable_nms
+            or self._last_fusion_nms_iou_threshold != self.fusion_nms_iou_threshold
+            or self._last_fusion_prob_threshold
+            != self.prob_threshold
+        )
+
+        button_label = (
+            "RUN FUSION (out of date)" if fusion_out_of_date else "RUN FUSION"
+        )
+        button_width = 400
+        button_height = 40
+        if fusion_out_of_date:
+            imgui.push_style_color(imgui.COLOR_BUTTON, 0.7, 0.15, 0.15, 1.0)
+            imgui.push_style_color(imgui.COLOR_BUTTON_HOVERED, 0.85, 0.2, 0.2, 1.0)
+            imgui.push_style_color(imgui.COLOR_BUTTON_ACTIVE, 0.5, 0.1, 0.1, 1.0)
+        if imgui.button(button_label, width=button_width, height=button_height):
+            self._run_fusion()
+            if hasattr(self, "_rgb_tracked_all_cache_epoch"):
+                self._rgb_tracked_all_cache_epoch += 1
+                self._rgb_tracked_all_color_cache = None
+                self._rgb_tracked_all_color_mode_cache = None
+            if hasattr(self, "_rebuild_rgb_projections"):
+                self._rebuild_rgb_projections()
+        if fusion_out_of_date:
+            imgui.pop_style_color(3)
+
+        imgui.separator()
+
+        imgui.push_item_width(200)
+        prob_changed, new_prob = imgui.slider_float(
+            "3DBB Conf Thresh", self.prob_threshold, 0.0, 1.0
+        )
+        if prob_changed:
+            self.prob_threshold = new_prob
+            self._cached_filtered_obbs = None
+        imgui.pop_item_width()
+
+        imgui.push_item_width(200)
+        _changed, self.fusion_semantic_threshold = imgui.slider_float(
+            "Semantic Merge Thresh", self.fusion_semantic_threshold, 0.0, 1.0
+        )
+        imgui.pop_item_width()
+
+        imgui.separator()
+
+        if self.fusion_enable_nms:
+            imgui.push_item_width(200)
+            _changed, self.fusion_nms_iou_threshold = imgui.slider_float(
+                "NMS IoU Thresh", self.fusion_nms_iou_threshold, 0.5, 1.0
+            )
+            imgui.pop_item_width()
+
+        imgui.text("Detection Statistics")
+        filtered_obbs, _ = self._get_filtered_obbs()
+        current_detections = len(filtered_obbs)
+        imgui.text(f"Shown: {current_detections} / {self.total_detections}")
+        if self.total_detections > 0:
+            percentage = (current_detections / self.total_detections) * 100
+            imgui.text(f"  ({percentage:.1f}%)")
+
+        imgui.push_item_width(200)
+        color_mode_names = ["PCA", "Prob", "Random"]
+        changed, self.color_mode = imgui.combo(
+            "Color Mode", self.color_mode, color_mode_names
+        )
+        if changed:
+            self._build_geometry_cache()
+            if self.tracked_all_instances:
+                self._build_tracked_all_geometry()
+            if hasattr(self, "_rgb_tracked_all_color_cache"):
+                self._rgb_tracked_all_color_cache = None
+                self._rgb_tracked_all_color_mode_cache = None
+            if hasattr(self, "_rebuild_rgb_projections"):
+                self._rebuild_rgb_projections()
+
+        if self.color_mode == COLOR_MODE_PCA:
+            imgui.text_colored("  PCA of text embeddings", 0.3, 1.0, 0.3)
+        elif self.color_mode == COLOR_MODE_PROBABILITY:
+            imgui.text_colored("  Jet colormap by probability", 1.0, 0.5, 0.0)
+
+        imgui.separator()
+
+        imgui.text("Fusion Parameters")
+        imgui.push_item_width(200)
+        _changed, self.fusion_iou_threshold = imgui.slider_float(
+            "IOU Threshold", self.fusion_iou_threshold, 0.0, 1.0
+        )
+        _changed, self.fusion_min_detections = imgui.slider_int(
+            "Min Detections", self.fusion_min_detections, 1, 10
+        )
+        _changed, self.fusion_samp_per_dim = imgui.slider_int(
+            "IoU Samples", self.fusion_samp_per_dim, 1, 32
+        )
+        imgui.pop_item_width()
+
+        imgui.push_item_width(200)
+        weighting_modes = ["uniform", "linear", "quadratic", "robust"]
+        current_idx = weighting_modes.index(self.fusion_confidence_weighting)
+        weighting_changed, new_idx = imgui.combo(
+            "Confidence Weighting", current_idx, weighting_modes
+        )
+        if weighting_changed:
+            self.fusion_confidence_weighting = weighting_modes[new_idx]
+        imgui.pop_item_width()
+
+        imgui.separator()
+
+        _changed, self.fusion_enable_nms = imgui.checkbox(
+            "Enable Fused NMS", self.fusion_enable_nms
+        )
+        if imgui.is_item_hovered():
+            imgui.begin_tooltip()
+            imgui.text("Remove redundant fused boxes with:")
+            imgui.text("  • IoU > threshold")
+            imgui.text("  • Semantic similarity > threshold")
+            imgui.end_tooltip()
+
+        if self.tracked_all_instances:
+            valid_instances = [inst for inst in self.tracked_all_instances if hasattr(inst, "support_count")]
+            imgui.text(f"Fused: {len(valid_instances)} instances")
+            total_detections = sum(
+                inst.support_count for inst in valid_instances
+            )
+            imgui.text(f"  From: {total_detections} detections")
+
+    def _render_playback_controls(self) -> None:
+        """Render playback controls (play/pause, frame slider, FPS)."""
+        self._section_header("Playback")
+
+        if imgui.button(
+            "Play" if not self.is_playing else "Pause", width=90, height=28
+        ):
+            self.is_playing = not self.is_playing
+            self._last_step_time = time_module.time()
+        imgui.same_line()
+        if imgui.button("<", width=30, height=28):
+            self.is_playing = False
+            self._step_to_frame(self.current_frame_idx - 1)
+        imgui.same_line()
+        if imgui.button(">", width=30, height=28):
+            self.is_playing = False
+            self._step_forward()
+
+        if self.total_frames > 0:
+            imgui.push_item_width(300)
+            changed, new_frame = imgui.slider_int(
+                "Frame",
+                self.current_frame_idx,
+                0,
+                max(0, self.total_frames - 1),
+            )
+            if changed:
+                self.is_playing = False
+                self._step_to_frame(new_frame)
+            imgui.pop_item_width()
+
+            imgui.push_item_width(200)
+            _changed, self.playback_fps = imgui.slider_float(
+                "Playback FPS", self.playback_fps, 0.5, 60.0
+            )
+            imgui.pop_item_width()
+            imgui.text("Space: play/pause, Left/Right: step")
+
+    def _render_main_controls(self) -> None:
+        """Render the main control panel UI."""
+        self._render_playback_controls()
+        self._render_fusion_controls()
+
+        self._section_header("Visualization")
+        self._render_common_visual_controls()
+
+        self._section_header("Camera")
+        if imgui.button("Focus on Scene"):
+            self._focus_on_scene()
+        imgui.same_line()
+        if imgui.button("Screenshot"):
+            self._save_screenshot()
+        imgui.same_line()
+        if imgui.button("Save View"):
+            self._save_camera_view()
+
+        self._section_header("Export")
+        # Disable export button if no fused instances
+        has_tracked_all = len(self.tracked_all_instances) > 0
+        if not has_tracked_all:
+            imgui.push_style_color(imgui.COLOR_BUTTON, 0.3, 0.3, 0.3, 1.0)
+            imgui.push_style_color(imgui.COLOR_BUTTON_HOVERED, 0.3, 0.3, 0.3, 1.0)
+            imgui.push_style_color(imgui.COLOR_BUTTON_ACTIVE, 0.3, 0.3, 0.3, 1.0)
+            imgui.push_style_color(imgui.COLOR_TEXT, 0.5, 0.5, 0.5, 1.0)
+
+        if imgui.button("Export Fused OBBs to ADT"):
+            if has_tracked_all:
+                self._export_tracked_all_obbs_adt()
+
+        if not has_tracked_all:
+            imgui.pop_style_color(4)
+            if imgui.is_item_hovered(imgui.HOVERED_ALLOW_WHEN_DISABLED):
+                imgui.begin_tooltip()
+                imgui.text("Run fusion first to enable export")
+                imgui.end_tooltip()
+
+        self._section_header("Scene Data")
+
+    def _export_tracked_all_obbs_adt(self) -> None:
+        """Export fused OBBs in ADT format using dump_obbs_adt."""
+        if not self.tracked_all_instances:
+            print("No fused instances to export. Run fusion first.")
+            return
+
+        # Stack all tracked-all OBBs into a single tensor
+        tracked_all_obbs_list = [
+            instance.obb for instance in self.tracked_all_instances
+        ]
+        tracked_all_obbs = torch.stack(tracked_all_obbs_list)
+
+        # Assign unique instance IDs to each fused box
+        ids = torch.arange(len(tracked_all_obbs), dtype=torch.int32)
+        tracked_all_obbs.set_inst_id(ids)
+
+        # Create timed_obbs dict with a single timestamp (static scene)
+        # Use timestamp -1 for static fused boxes
+        timed_obbs = {-1: tracked_all_obbs}
+
+        # Export to ADT format
+        output_path = os.path.join(self.root_path, "tracked_all_adt_export")
+        os.makedirs(output_path, exist_ok=True)
+
+        print(
+            f"\n=== Exporting {len(tracked_all_obbs)} Tracked-All OBBs to ADT Format ==="
+        )
+        print(f"Output path: {output_path}")
+
+        dump_obbs_adt(output_path, timed_obbs)
+
+        print("=== Export Complete ===\n")
+
+
+class SequenceOBBViewer(OBBViewer):
+    """OBBViewer with sequence-aware features: RGB panel, trajectory, frustum, calibrations.
+
+    Adds sequence context loading, RGB panel rendering, trajectory/frustum overlays,
+    camera-based visibility culling, and 2D projection of 3D boxes onto images.
+    """
+
+    title = "OBB Sequence Viewer"
+
+    def __init__(
+        self,
+        all_obbs: ObbTW,
+        root_path: str,
+        timed_obbs: dict[int, ObbTW] | None = None,
+        loader_max_frames: int = 0,
+        loader_start_frame: int = 0,
+        init_rgb_text_scale: Optional[float] = None,
+        init_color_mode: Optional[str] = None,
+        init_image_panel_width: Optional[float] = None,
+        skip_precompute: bool = False,
+        load_view_data: dict | None = None,
+        view_save_path: str = "",
+        seq_name: str = "",
+        scannet_scene: str | None = None,
+        scannet_annotation_path: str = "~/data/scannet/full_annotations.json",
+        seq_ctx: dict | None = None,
+        **kwargs: Any,
+    ) -> None:
+        self._prebuilt_seq_ctx = seq_ctx
+        self.scannet_scene = scannet_scene
+        self.scannet_annotation_path = scannet_annotation_path
+        self._loader_max_frames = int(loader_max_frames)
+        self._loader_start_frame = int(loader_start_frame)
+
+        # RGB video panel state
+        self._rgb_texture = None
+        self._rgb_tex_size = (0, 0)
+        self.show_rgb = True
+        self.rgb_panel_max_frac = 0.45
+        if init_image_panel_width is not None:
+            self.rgb_panel_max_frac = float(init_image_panel_width)
+        if not hasattr(self, "_data_source"):
+            self._data_source = "ca1m" if seq_name.startswith("ca1m") else "aria"
+        if not hasattr(self, "_scannet_scene_dir"):
+            self._scannet_scene_dir: Optional[str] = None
+        if not hasattr(self, "_scannet_frame_ids"):
+            self._scannet_frame_ids: Optional[list[str]] = None
+        self._rgb_lru_cache: OrderedDict[int, np.ndarray] = OrderedDict()
+        self._rgb_lru_max_items = 32
+        if not hasattr(self, "_loader"):
+            self._loader = None
+        self._rgb_img_scale: float = 1.0
+        self._rgb_vrs_h: int = 0
+        self._rgb_vrs_w: int = 0
+        if not hasattr(self, "_vrs_is_nebula"):
+            self._vrs_is_nebula = False
+        if not hasattr(self, "_rgb_timestamps"):
+            self._rgb_timestamps = np.array([])
+        self.show_rgb_obbs = True
+        self.show_rgb_raw = False
+        self.show_rgb_tracked_all = False
+        self.show_rgb_tracked_visible = True
+        self.rgb_obb_thickness = 3.0
+        self.show_rgb_labels = True
+        self.rgb_text_scale = 1.4
+        if init_rgb_text_scale is not None:
+            self.rgb_text_scale = float(init_rgb_text_scale)
+        self._rgb_label_fonts: dict[float, Any] = {}
+        self._rgb_projected_raw_lines: list[
+            tuple[np.ndarray, np.ndarray, np.ndarray]
+        ] = []
+        self._rgb_projected_tracked_all_lines: list[
+            tuple[np.ndarray, np.ndarray, np.ndarray]
+        ] = []
+        self._rgb_projected_tracked_visible_lines: list[
+            tuple[np.ndarray, np.ndarray, np.ndarray]
+        ] = []
+        self._rgb_projected_labels: list[tuple] = []
+        self._rgb_projected_tracked_all_labels: list[tuple[float, float, str]] = []
+        self._rgb_projected_tracked_visible_labels: list[tuple[float, float, str]] = []
+
+        # Pose/calibration for projecting 3DBBs into RGB image
+        if not hasattr(self, "traj"):
+            self.traj = None
+        if not hasattr(self, "pose_ts"):
+            self.pose_ts = np.array([])
+        if not hasattr(self, "calibs"):
+            self.calibs = None
+        if not hasattr(self, "calib_ts"):
+            self.calib_ts = np.array([])
+        # RGB overlay color cache
+        self._rgb_tracked_all_color_cache: Optional[np.ndarray] = None
+        self._rgb_tracked_all_color_mode_cache: Optional[int] = None
+        self._rgb_tracked_all_cache_epoch = 0
+        self._rgb_tracked_all_cache_epoch_used = -1
+
+        # Navigation overlays (trajectory + frustum)
+        self.show_trajectory = True
+        self.traj_alpha = 1.0
+        self.traj_tail_secs = 3.0
+        self.show_frustum = True
+        self.frustum_scale = 0.1
+        self.traj_instance_vbo = None
+        self.traj_instance_vao = None
+        self.traj_instance_count = 0
+        self._traj_all_segments = None
+        self._traj_seg_ts = None
+        self.frustum_instance_vbo = None
+        self.frustum_instance_vao = None
+        self.frustum_instance_count = 0
+        self.outline_instance_vbo = None
+        self.outline_instance_vao = None
+        self.outline_instance_count = 0
+
+        super().__init__(
+            all_obbs=all_obbs,
+            root_path=root_path,
+            timed_obbs=timed_obbs,
+            init_color_mode=init_color_mode,
+            init_image_panel_width=init_image_panel_width,
+            skip_precompute=skip_precompute,
+            load_view_data=load_view_data,
+            view_save_path=view_save_path,
+            seq_name=seq_name,
+            **kwargs,
+        )
+
+        # Load sequence context (RGB/traj/calib)
+        has_rgb_timeline = len(getattr(self, "_rgb_timestamps", np.array([]))) > 0
+        has_preloaded_context = (
+            has_rgb_timeline and (self.traj is not None) and (self.calibs is not None)
+        )
+        skip_context = self._prebuilt_seq_ctx is not None and len(self._prebuilt_seq_ctx) == 0
+        if self.total_frames > 0 and not has_preloaded_context and not skip_context:
+            try:
+                t_ctx0 = time_module.perf_counter()
+                if self._prebuilt_seq_ctx is not None:
+                    seq_ctx_data = self._prebuilt_seq_ctx
+                else:
+                    seq_ctx_data = _load_sequence_context_auto(
+                        seq_name=seq_name,
+                        scannet_scene=self.scannet_scene,
+                        scannet_annotation_path=self.scannet_annotation_path,
+                        with_sdp=False,
+                        start_frame=max(0, self._loader_start_frame),
+                        max_frames=(
+                            self._loader_max_frames
+                            if self._loader_max_frames > 0
+                            else self.total_frames
+                        ),
+                    )
+                self._data_source = seq_ctx_data.get("source", "aria")
+                source_name = {
+                    "ca1m": "CALoader",
+                    "scannet": "ScanNetLoader",
+                }.get(self._data_source, "AriaLoader")
+                print("Data source: " + source_name)
+                self._loader = seq_ctx_data.get("loader", None)
+                self._scannet_scene_dir = seq_ctx_data.get("scannet_scene_dir", None)
+                self._rgb_num_frames = seq_ctx_data["rgb_num_frames"]
+                self._rgb_timestamps = seq_ctx_data["rgb_timestamps"]
+                self._rgb_images = seq_ctx_data.get("rgb_images", None)
+                self._vrs_is_nebula = seq_ctx_data["is_nebula"]
+                self.traj = seq_ctx_data["traj"]
+                self.pose_ts = seq_ctx_data["pose_ts"]
+                self.calibs = seq_ctx_data["calibs"]
+                self.calib_ts = seq_ctx_data["calib_ts"]
+                ts0 = self.sorted_timestamps[0]
+                rgb0 = self._load_rgb_for_timestamp(ts0)
+                if rgb0 is not None:
+                    self._upload_rgb_texture(rgb0)
+                self._rebuild_rgb_projections()
+                _startup_log(
+                    f"SequenceOBBViewer context applied in {(time_module.perf_counter() - t_ctx0):.2f}s"
+                )
+            except Exception as e:
+                print(f"Warning: failed to initialize RGB panel: {e}")
+                self._rgb_images = None
+        if self.show_rgb and self._rgb_texture is None and self.total_frames > 0:
+            ts0 = self.sorted_timestamps[0]
+            rgb0 = self._load_rgb_for_timestamp(ts0)
+            if rgb0 is not None:
+                self._upload_rgb_texture(rgb0)
+
+        # Build trajectory overlay geometry
+        self._build_trajectory_geometry()
+        if self.total_frames > 0:
+            self._step_to_frame(self.current_frame_idx)
+
+    def _compute_rgb_panel_width(self, win_w: int, panel_h: int) -> int:
+        """Compute right RGB panel width as a fraction of window width."""
+        if self._rgb_texture is None or not self.show_rgb:
+            return 0
+        return int(win_w * self.rgb_panel_max_frac)
+
+    def _get_3d_viewport_size(self) -> tuple[int, int]:
+        """Return (width, height) of 3D viewport (right of controls + RGB panels)."""
+        w, h = self.wnd.size
+        ui_w = self.ui_panel_width
+        panel_w = self._compute_rgb_panel_width(w, h)
+        if panel_w > 0:
+            return max(1, w - ui_w - panel_w), h
+        return w, h
+
+    def _get_rgb_label_font(self) -> Any:
+        """Return cached ImGui font for current RGB text scale (larger glyphs)."""
+        scale = max(0.5, float(self.rgb_text_scale))
+        key = round(scale, 2)
+        if key in self._rgb_label_fonts:
+            return self._rgb_label_fonts[key]
+        size_px = max(10.0, 16.0 * key)
+        io = imgui.get_io()
+        font_paths = [
+            "/System/Library/Fonts/Supplemental/Arial.ttf",
+            "/System/Library/Fonts/Supplemental/Helvetica.ttc",
+            "/System/Library/Fonts/SFNS.ttf",
+        ]
+        for p in font_paths:
+            if os.path.exists(p):
+                try:
+                    fnt = io.fonts.add_font_from_file_ttf(p, size_px)
+                    self.imgui.refresh_font_texture()
+                    self._rgb_label_fonts[key] = fnt
+                    return fnt
+                except Exception:
+                    continue
+        return None
 
     def _load_rgb_for_timestamp(self, ts_ns: int) -> Optional[np.ndarray]:
         """Load nearest RGB frame for the given timestamp."""
@@ -1846,13 +2305,11 @@ class OBBViewer(OrbitViewer):
             self._rgb_texture.write(img.tobytes())
 
     def _step_to_frame(self, target_idx: int) -> None:
-        """Seek to frame index and update RGB texture."""
+        """Seek to frame index, update RGB texture, frustum, and trajectory."""
+        super()._step_to_frame(target_idx)
         if self.total_frames == 0:
             return
-        target_idx = max(0, min(target_idx, self.total_frames - 1))
-        self.current_frame_idx = target_idx
-        ts = self.sorted_timestamps[target_idx]
-        self._set_frame_obb_sets(raw=self.timed_obbs.get(ts))
+        ts = self.sorted_timestamps[self.current_frame_idx]
         rgb = self._load_rgb_for_timestamp(ts)
         if rgb is not None:
             self._upload_rgb_texture(rgb)
@@ -1860,7 +2317,7 @@ class OBBViewer(OrbitViewer):
             self, "_scannet_debug_points", True
         ):
             print(f"[ScanNet RGB] frame_idx={target_idx} ts={ts}: no RGB image")
-        nav_ts = self._get_navigation_timestamp(target_idx, ts)
+        nav_ts = self._get_navigation_timestamp(self.current_frame_idx, ts)
         cam, T_wr = self._get_cam_and_pose(nav_ts)
         if cam is not None and T_wr is not None:
             self._build_frustum_geometry(cam, T_wr)
@@ -1935,18 +2392,13 @@ class OBBViewer(OrbitViewer):
             ],
         )
 
-    def _step_forward(self) -> None:
-        if self.current_frame_idx < self.total_frames - 1:
-            self._step_to_frame(self.current_frame_idx + 1)
-
     def _build_trajectory_geometry(self) -> None:
         """Build full trajectory segment array for trajectory tail rendering."""
         if self.traj is None:
             return
         if hasattr(self.traj, "t"):
-            positions = self.traj.t.cpu().float()  # (N, 3)
+            positions = self.traj.t.cpu().float()
         else:
-            # CA loader path may provide a list[PoseTW]
             positions = torch.stack(
                 [pose.t.reshape(3).cpu().float() for pose in self.traj], dim=0
             )
@@ -2076,7 +2528,6 @@ class OBBViewer(OrbitViewer):
         if len(self.pose_ts) == 0 or len(self.calib_ts) == 0:
             return None, None
         if getattr(self, "_data_source", None) == "ca1m":
-            # CA alignment: use one RGB-timeline index for image/pose/calib sync.
             if len(self._rgb_timestamps) > 0:
                 idx = int(find_nearest2(self._rgb_timestamps, ts_ns))
                 pose_idx = max(0, min(idx, len(self.traj) - 1))
@@ -2094,11 +2545,7 @@ class OBBViewer(OrbitViewer):
         return cam, T_wr
 
     def _get_navigation_timestamp(self, frame_idx: int, fallback_ts: int) -> int:
-        """Timestamp used for camera/frustum/trajectory overlays.
-
-        Always anchor navigation/projection to the current detection timestamp.
-        (Index-based alignment can drift when detection CSV has dropped frames.)
-        """
+        """Timestamp used for camera/frustum/trajectory overlays."""
         return int(fallback_ts)
 
     def _project_obbs_for_rgb(
@@ -2117,7 +2564,7 @@ class OBBViewer(OrbitViewer):
             return [], []
 
         N_SUB = 10
-        corners = obbs.bb3corners_world  # (N, 8, 3)
+        corners = obbs.bb3corners_world
         edge_idx = torch.tensor(BB3D_LINE_ORDERS, dtype=torch.long)
         p0 = corners[:, edge_idx[:, 0], :]
         p1 = corners[:, edge_idx[:, 1], :]
@@ -2130,10 +2577,6 @@ class OBBViewer(OrbitViewer):
         pts_world = edge_pts.reshape(-1, 3)
         T_world_cam = T_wr @ cam.T_camera_rig.inverse()
         pts_cam = T_world_cam.inverse().transform(pts_world)
-        # Scale camera to match actual VRS image resolution if they differ.
-        # The raw calibrations from load_online_calib may be at a different
-        # resolution than the VRS image (AriaLoader._single handles this
-        # internally, but self.calibs stores the un-scaled originals).
         proj_cam = cam
         if self._rgb_vrs_w > 0 and self._rgb_vrs_h > 0:
             cam_w = cam.size[..., 0].item()
@@ -2183,7 +2626,7 @@ class OBBViewer(OrbitViewer):
         scale_x: float,
         scale_y: float,
     ) -> None:
-        """Draw text labels on an RGB panel. Shared by OBBViewer and TrackerViewer."""
+        """Draw text labels on an RGB panel."""
         text_col = imgui.get_color_u32_rgba(1.0, 1.0, 1.0, 1.0)
         label_scale = max(0.5, float(self.rgb_text_scale))
         imgui.set_window_font_scale(label_scale)
@@ -2215,7 +2658,6 @@ class OBBViewer(OrbitViewer):
 
         if self.total_frames == 0 or self.current_frame_idx >= self.total_frames:
             return
-        # Need preloaded RGB images from loader context.
         if getattr(self, "_rgb_images", None) is None:
             return
         ts = self.sorted_timestamps[self.current_frame_idx]
@@ -2224,7 +2666,6 @@ class OBBViewer(OrbitViewer):
         if cam is None or T_wr is None:
             return
 
-        # Raw detections from current frame (gray)
         raw_obbs = self.timed_obbs.get(ts)
         if raw_obbs is not None and len(raw_obbs) > 0:
             raw_colors = np.tile(
@@ -2233,7 +2674,6 @@ class OBBViewer(OrbitViewer):
             raw_lines, _ = self._project_obbs_for_rgb(raw_obbs, cam, T_wr, raw_colors)
             self._rgb_projected_raw_lines = raw_lines
 
-        # Tracked-all detections (colored by current color mode)
         if self.tracked_all_instances:
             tracked_all_obbs = torch.stack(
                 [inst.obb for inst in self.tracked_all_instances]
@@ -2269,30 +2709,11 @@ class OBBViewer(OrbitViewer):
                         .astype(np.float32)
                     )
                 else:
-                    use_alt = self.color_mode == COLOR_MODE_SEMANTIC_ALT
-                    if use_alt:
-                        if self._sem2color_cache_alt is None:
-                            self._sem2color_cache_alt = self._create_color_map(
-                                use_alt=True
-                            )
-                        sem2color = self._sem2color_cache_alt
-                    else:
-                        if self._sem2color_cache_std is None:
-                            self._sem2color_cache_std = self._create_color_map(
-                                use_alt=False
-                            )
-                        sem2color = self._sem2color_cache_std
-                    sem_ids = (
-                        tracked_all_obbs.sem_id.squeeze(-1).cpu().numpy().astype(int)
-                    )
-                    tracked_all_colors = np.array(
-                        [
-                            sem2color.get(
-                                int(sid), np.array([0.5, 0.5, 0.5], dtype=np.float32)
-                            )
-                            for sid in sem_ids
-                        ],
-                        dtype=np.float32,
+                    tracked_all_colors = (
+                        self._obbs_random_colors(tracked_all_obbs)
+                        .cpu()
+                        .numpy()
+                        .astype(np.float32)
                     )
                 self._rgb_tracked_all_color_cache = tracked_all_colors
                 self._rgb_tracked_all_color_mode_cache = self.color_mode
@@ -2328,232 +2749,55 @@ class OBBViewer(OrbitViewer):
                 self._rgb_projected_tracked_visible_lines = vis_lines
                 self._rgb_projected_tracked_visible_labels = vis_labels_xy
 
-    def on_key_event(self, key, action, modifiers):
-        """Keyboard shortcuts for RGB playback."""
-        super().on_key_event(key, action, modifiers)
-        if action != self.wnd.keys.ACTION_PRESS:
-            return
-
-        if key == self.wnd.keys.SPACE:
-            if self.current_frame_idx >= self.total_frames - 1:
-                self._step_to_frame(0)
-                self.is_playing = True
-            else:
-                self.is_playing = not self.is_playing
-            self._last_step_time = time_module.time()
-        elif key == self.wnd.keys.RIGHT:
-            self.is_playing = False
-            self._step_forward()
-        elif key == self.wnd.keys.LEFT:
-            self.is_playing = False
-            self._step_to_frame(self.current_frame_idx - 1)
-
-    def _render_text_labels(self) -> None:
-        """Render text labels for fused boxes in screen space."""
-        if not self.show_text_labels or not self.tracked_all_label_positions:
-            return
-
-        # Get camera matrices and viewport
-        _projection, _view, mvp = self.get_camera_matrices()
-        full_w, full_h = self.wnd.size
-        w, h = self._get_3d_viewport_size()
-        vp_x = full_w - w  # viewport x offset (panels on left)
-
-        # Convert Matrix44 to numpy array
-        mvp_array = np.array(mvp, dtype=np.float32)
-
-        text_col = imgui.get_color_u32_rgba(1.0, 1.0, 1.0, 1.0)
-        draw_list = imgui.get_foreground_draw_list()
-
-        # Render each text label at each fused box position
-        for i, pos_3d in enumerate(self.tracked_all_label_positions):
-            # Get the text label for this fused instance
-            text = self.tracked_all_text_labels[i]
-
-            # Project 3D position to screen
-            screen_x, screen_y, is_visible = self._project_to_screen(
-                np.array(pos_3d), mvp_array, (w, h)
-            )
-
-            if not is_visible:
-                continue
-
-            # Offset screen_x by viewport origin (panels on left)
-            screen_x += vp_x
-
-            # Skip if label would overlap with UI controls panel
-            if screen_x < vp_x + self.ui_panel_width:
-                continue
-
-            # Add small offset so text doesn't overlap with box center
-            text_x = screen_x + 10
-            text_y = screen_y - 10
-
-            # Compute dimensions if enabled
-            if self.show_dimensions and i < len(self.tracked_all_instances):
-                obb = self.tracked_all_instances[i].obb
-                corners = obb.bb3corners_world.cpu().numpy().squeeze()  # (8, 3)
-                x_dim = np.linalg.norm(corners[1] - corners[0])  # Width
-                y_dim = np.linalg.norm(corners[3] - corners[0])  # Height
-                z_dim = np.linalg.norm(corners[4] - corners[0])  # Depth
-                display_text = f"{text} ({y_dim:.2f}x{x_dim:.2f}x{z_dim:.2f})"
-            else:
-                display_text = text
-
-            # Background color: darkened OBB color (matches 2D BB style)
-            if i < len(self.tracked_all_label_colors):
-                c = self.tracked_all_label_colors[i]
-                bg_col = imgui.get_color_u32_rgba(
-                    float(c[0]) * 0.4, float(c[1]) * 0.4, float(c[2]) * 0.4, 0.6
-                )
-            else:
-                br, bg_, bb, ba = self.overlay_text_bg_rgba
-                bg_col = imgui.get_color_u32_rgba(br, bg_, bb, ba)
-
-            tw, th = imgui.calc_text_size(display_text)
-            draw_list.add_rect_filled(
-                text_x - 2, text_y - 1, text_x + tw + 2, text_y + th + 1, bg_col
-            )
-            draw_list.add_text(text_x, text_y, text_col, display_text)
-
     def render_3d(self, time: float, frame_time: float) -> None:
-        """Render all OBBs using instanced quad rendering for thick lines."""
-        # Playback update for RGB panel
-        if self._handle_playback_in_base and self.is_playing and self.total_frames > 0:
-            now = time_module.time()
-            if now - self._last_step_time >= 1.0 / max(self.playback_fps, 0.1):
-                self._last_step_time = now
-                self._step_forward()
+        """Render 3D boxes + trajectory + frustum overlays."""
+        super().render_3d(time, frame_time)
 
-        full_w, h = self.wnd.size
-
-        # Split viewport: panels on left, 3D on right
+        # Render navigation overlays (trajectory + frustum) in the 3D viewport
+        full_w, _ = self.wnd.size
         w, h = self._get_3d_viewport_size()
         vp_x = full_w - w
         self.ctx.viewport = (vp_x, 0, w, h)
         self.ctx.scissor = (vp_x, 0, w, h)
-
-        # Get camera matrices and viewport (match active 3D area)
-        _projection, _view, mvp = self.get_camera_matrices()
-        self._last_render_mvp = np.asarray(mvp, dtype=np.float32).copy()
-
-        # Disable depth testing for line rendering (lines render on top)
         self.ctx.disable(self.ctx.DEPTH_TEST)
 
-        # Render original detections with instanced quads
-        if self.show_raw_set and self.cached_instance_vao is not None:
-            self.line_prog["mvp"].write(mvp.astype("f4").tobytes())
-            self.line_prog["alpha"].write(np.array(self.alpha, dtype="f4").tobytes())
-            self.line_prog["prob_threshold"].write(
-                np.array(self.prob_threshold, dtype="f4").tobytes()
-            )
-            self.line_prog["line_width"].value = float(self.raw_line_width)
-            self.line_prog["viewport_size"].write(
-                np.array([w, h], dtype="f4").tobytes()
-            )
+        mvp = self._last_render_mvp
+        if mvp is None:
+            return
+        mvp_bytes = mvp.astype("f4").tobytes()
+        viewport_bytes = np.array([w, h], dtype="f4").tobytes()
+        prob_zero_bytes = np.array(0.0, dtype="f4").tobytes()
 
-            # Render using instanced drawing: 6 vertices per quad, N instances
-            self.cached_instance_vao.render(
-                mode=self.ctx.TRIANGLES, instances=self.cached_instance_count
+        if self.show_trajectory and self.traj_instance_vao is not None:
+            self.line_prog["mvp"].write(mvp_bytes)
+            self.line_prog["alpha"].write(
+                np.array(self.traj_alpha, dtype="f4").tobytes()
             )
-
-        # Render fused instances with instanced quads
-        if self.show_tracked_all_set and self.tracked_all_instance_vao is not None:
-            self.line_prog["mvp"].write(mvp.astype("f4").tobytes())
+            self.line_prog["prob_threshold"].write(prob_zero_bytes)
+            self.line_prog["line_width"].value = 2.0
+            self.line_prog["viewport_size"].write(viewport_bytes)
+            self.traj_instance_vao.render(
+                mode=self.ctx.TRIANGLES, instances=self.traj_instance_count
+            )
+        if self.show_frustum and self.frustum_instance_vao is not None:
+            self.line_prog["mvp"].write(mvp_bytes)
             self.line_prog["alpha"].write(np.array(1.0, dtype="f4").tobytes())
-            self.line_prog["prob_threshold"].write(np.array(0.0, dtype="f4").tobytes())
-            self.line_prog["line_width"].value = float(self.tracked_all_line_width)
-            self.line_prog["viewport_size"].write(
-                np.array([w, h], dtype="f4").tobytes()
+            self.line_prog["prob_threshold"].write(prob_zero_bytes)
+            self.line_prog["line_width"].value = 2.0
+            self.line_prog["viewport_size"].write(viewport_bytes)
+            self.frustum_instance_vao.render(
+                mode=self.ctx.TRIANGLES, instances=self.frustum_instance_count
             )
 
-            # Render using instanced drawing
-            self.tracked_all_instance_vao.render(
-                mode=self.ctx.TRIANGLES, instances=self.tracked_all_instance_count
-            )
-
-        # Render visible tracked subset with thicker lines
-        if self.show_tracked_visible_set and self.outline_instance_vao is not None:
-            self.line_prog["mvp"].write(mvp.astype("f4").tobytes())
-            self.line_prog["alpha"].write(np.array(1.0, dtype="f4").tobytes())
-            self.line_prog["prob_threshold"].write(np.array(0.0, dtype="f4").tobytes())
-            self.line_prog["line_width"].value = float(
-                getattr(self, "visible_line_width", self.tracked_all_line_width + 2)
-            )
-            self.line_prog["viewport_size"].write(
-                np.array([w, h], dtype="f4").tobytes()
-            )
-            self.outline_instance_vao.render(
-                mode=self.ctx.TRIANGLES, instances=self.outline_instance_count
-            )
-
-        # Render axis lines (RGB for XYZ) when enabled
-        if self.show_axis_lines and self.axis_instance_vao is not None:
-            self.line_prog["mvp"].write(mvp.astype("f4").tobytes())
-            self.line_prog["alpha"].write(np.array(1.0, dtype="f4").tobytes())
-            self.line_prog["prob_threshold"].write(
-                np.array(self.prob_threshold, dtype="f4").tobytes()
-            )
-            self.line_prog["line_width"].value = float(self.tracked_all_line_width)
-            self.line_prog["viewport_size"].write(
-                np.array([w, h], dtype="f4").tobytes()
-            )
-
-            # Render axis lines using instanced drawing
-            self.axis_instance_vao.render(
-                mode=self.ctx.TRIANGLES, instances=self.axis_instance_count
-            )
-
-        # Navigation overlays (trajectory + frustum)
-        if self._render_navigation_overlays_in_base:
-            mvp_bytes = mvp.astype("f4").tobytes()
-            viewport_bytes = np.array([w, h], dtype="f4").tobytes()
-            prob_zero_bytes = np.array(0.0, dtype="f4").tobytes()
-            alpha_one_bytes = np.array(1.0, dtype="f4").tobytes()
-            if self.show_trajectory and self.traj_instance_vao is not None:
-                self.line_prog["mvp"].write(mvp_bytes)
-                self.line_prog["alpha"].write(
-                    np.array(self.traj_alpha, dtype="f4").tobytes()
-                )
-                self.line_prog["prob_threshold"].write(prob_zero_bytes)
-                self.line_prog["line_width"].value = 2.0
-                self.line_prog["viewport_size"].write(viewport_bytes)
-                self.traj_instance_vao.render(
-                    mode=self.ctx.TRIANGLES, instances=self.traj_instance_count
-                )
-            if self.show_frustum and self.frustum_instance_vao is not None:
-                self.line_prog["mvp"].write(mvp_bytes)
-                self.line_prog["alpha"].write(alpha_one_bytes)
-                self.line_prog["prob_threshold"].write(prob_zero_bytes)
-                self.line_prog["line_width"].value = 2.0
-                self.line_prog["viewport_size"].write(viewport_bytes)
-                self.frustum_instance_vao.render(
-                    mode=self.ctx.TRIANGLES, instances=self.frustum_instance_count
-                )
-
-        # Restore full viewport for imgui rendering
+        # Restore full viewport
         self.ctx.viewport = (0, 0, full_w, h)
         self.ctx.scissor = None
 
     def render_ui(self) -> None:
-        """Render ImGui UI panel."""
-        # Render text labels for fused boxes (before UI panels so they appear behind)
-        if self.show_tracked_all_set:
-            self._render_text_labels()
+        """Render UI panel + RGB panel."""
+        super().render_ui()
 
-        # Get current window size dynamically
-        w, h = self.wnd.size
-
-        imgui.set_next_window_position(0, 0, imgui.ONCE)
-        imgui.set_next_window_size(450, h, imgui.ALWAYS)  # Always match window height
-
-        imgui.begin("OBB Controls", flags=imgui.WINDOW_NO_MOVE | imgui.WINDOW_NO_RESIZE)
-
-        # Render all the main controls
-        self._render_main_controls()
-        imgui.end()
-
-        # Right RGB panel (same general layout as tracker)
+        # Right RGB panel
         if self._rgb_texture is not None and self.show_rgb:
             tex_w, tex_h = self._rgb_tex_size
             win_w, win_h = self.wnd.size
@@ -2666,371 +2910,73 @@ class OBBViewer(OrbitViewer):
         tracked_all_line_label: str = "Tracked All Line Width",
         show_visible_line_width: bool = False,
     ) -> None:
-        """Render visualization controls shared by fusion and tracker viewers."""
-        imgui.push_item_width(200)
-        _theme_changed, self.visual_theme_mode = imgui.combo(
-            "Theme", self.visual_theme_mode, ["Light", "Dark"]
+        """Render visual controls including trajectory/frustum/RGB toggles."""
+        super()._render_common_visual_controls(
+            tracked_all_checkbox_label=tracked_all_checkbox_label,
+            tracked_all_line_label=tracked_all_line_label,
+            show_visible_line_width=show_visible_line_width,
         )
-        if _theme_changed:
-            self._apply_visual_theme()
-            if self.color_mode == COLOR_MODE_RANDOM:
-                # Random mode depends on theme contrast; rebuild colorized geometry.
-                self._build_geometry_cache()
-                if self.tracked_all_instances:
-                    self._build_tracked_all_geometry()
-                self._rgb_tracked_all_color_cache = None
-                self._rebuild_rgb_projections()
-        imgui.pop_item_width()
-
-        imgui.text("OBB Sets")
-        _changed, self.show_raw_set = imgui.checkbox("Raw", self.show_raw_set)
-        _changed, self.show_tracked_all_set = imgui.checkbox(
-            tracked_all_checkbox_label, self.show_tracked_all_set
+        _changed, self.show_trajectory = imgui.checkbox(
+            "Show Trajectory", self.show_trajectory
         )
-        _changed, self.show_tracked_visible_set = imgui.checkbox(
-            "Tracked Visible", self.show_tracked_visible_set
+        _changed, self.show_frustum = imgui.checkbox(
+            "Show Frustum", self.show_frustum
         )
-        _changed, self.show_text_labels = imgui.checkbox(
-            "Show Labels", self.show_text_labels
-        )
-        if hasattr(self, "show_dimensions"):
-            _changed, self.show_dimensions = imgui.checkbox(
-                "Show Dimensions", self.show_dimensions
-            )
-        if not hasattr(self, "track_color_mode"):
-            _changed, self.show_axis_lines = imgui.checkbox(
-                "Show Axis Lines (RGB=XYZ)", self.show_axis_lines
-            )
-            _changed, self.show_trajectory = imgui.checkbox(
-                "Show Trajectory", self.show_trajectory
-            )
-            _changed, self.show_frustum = imgui.checkbox(
-                "Show Frustum", self.show_frustum
-            )
-
-        if hasattr(self, "show_rgb"):
-            _changed, self.show_rgb = imgui.checkbox("Show RGB Panel", self.show_rgb)
-            if self.show_rgb:
-                imgui.push_item_width(200)
-                _changed, self.rgb_panel_max_frac = imgui.slider_float(
-                    "RGB Panel Width", self.rgb_panel_max_frac, 0.25, 0.75
-                )
-                imgui.pop_item_width()
-                _changed, self.show_rgb_obbs = imgui.checkbox(
-                    "Show RGB OBBs", self.show_rgb_obbs
-                )
-                _changed, self.show_rgb_raw = imgui.checkbox(
-                    "Show RGB Raw", self.show_rgb_raw
-                )
-                _changed, self.show_rgb_tracked_visible = imgui.checkbox(
-                    "Show RGB Tracked Visible", self.show_rgb_tracked_visible
-                )
-                _changed, self.show_rgb_tracked_all = imgui.checkbox(
-                    "Show RGB Tracked All", self.show_rgb_tracked_all
-                )
-                _changed, self.show_rgb_labels = imgui.checkbox(
-                    "Show RGB Labels", self.show_rgb_labels
-                )
-                imgui.push_item_width(200)
-                _changed, self.rgb_obb_thickness = imgui.slider_float(
-                    "RGB 3DBB Width", self.rgb_obb_thickness, 1.0, 10.0
-                )
-                _changed, self.rgb_text_scale = imgui.slider_float(
-                    "RGB Text Scale", self.rgb_text_scale, 0.5, 5.0
-                )
-                imgui.pop_item_width()
-
-        imgui.push_item_width(200)
-        _changed, self.alpha = imgui.slider_float(
-            "Detection Alpha", self.alpha, 0.0, 1.0
-        )
-        _changed, self.raw_line_width = imgui.slider_int(
-            "Raw Line Width", self.raw_line_width, 1, 10
-        )
-        _changed, self.tracked_all_line_width = imgui.slider_int(
-            tracked_all_line_label, self.tracked_all_line_width, 1, 10
-        )
-        if show_visible_line_width and hasattr(self, "visible_line_width"):
-            _changed, self.visible_line_width = imgui.slider_int(
-                "Visible Line Width", self.visible_line_width, 1, 10
-            )
-        if hasattr(self, "traj_alpha") and not hasattr(self, "track_color_mode"):
-            _changed, self.traj_alpha = imgui.slider_float(
-                "Traj Alpha", self.traj_alpha, 0.0, 1.0
-            )
-            changed, self.traj_tail_secs = imgui.slider_float(
-                "Traj Tail (s)", self.traj_tail_secs, 0.5, 30.0
-            )
-            if changed and hasattr(self, "total_frames") and self.total_frames > 0:
-                ts = self.sorted_timestamps[self.current_frame_idx]
-                self._update_trajectory_tail(ts)
-        if hasattr(self, "frustum_scale") and not hasattr(self, "track_color_mode"):
-            changed, self.frustum_scale = imgui.slider_float(
-                "Frustum Scale", self.frustum_scale, 0.001, 0.5
-            )
-            if changed and hasattr(self, "total_frames") and self.total_frames > 0:
-                ts = self.sorted_timestamps[self.current_frame_idx]
-                cam, T_wr = self._get_cam_and_pose(ts)
-                if cam is not None and T_wr is not None:
-                    self._build_frustum_geometry(cam, T_wr)
-        imgui.pop_item_width()
-        imgui.separator()
-
-    def _section_header(self, title: str) -> None:
-        """Draw a consistent section header in the left control panel."""
-        imgui.separator()
-        imgui.text(title)
-        imgui.separator()
-
-    def _render_fusion_controls(self) -> None:
-        """Render fusion section UI (reusable by both OBBViewer and TrackerViewer)."""
-        self._section_header("Fusion")
-
-        # Check if fusion parameters are out of date
-        fusion_out_of_date = (
-            self._last_fusion_iou_threshold != self.fusion_iou_threshold
-            or self._last_fusion_min_detections != self.fusion_min_detections
-            or self._last_fusion_confidence_weighting
-            != self.fusion_confidence_weighting
-            or self._last_fusion_samp_per_dim != self.fusion_samp_per_dim
-            or self._last_fusion_semantic_threshold != self.fusion_semantic_threshold
-            or self._last_fusion_enable_nms != self.fusion_enable_nms
-            or self._last_fusion_nms_iou_threshold != self.fusion_nms_iou_threshold
-            or self._last_fusion_prob_threshold
-            != self.prob_threshold
-        )
-
-        button_label = (
-            "RUN FUSION (out of date)" if fusion_out_of_date else "RUN FUSION"
-        )
-        button_width = 400
-        button_height = 40
-        if fusion_out_of_date:
-            imgui.push_style_color(imgui.COLOR_BUTTON, 0.7, 0.15, 0.15, 1.0)
-            imgui.push_style_color(imgui.COLOR_BUTTON_HOVERED, 0.85, 0.2, 0.2, 1.0)
-            imgui.push_style_color(imgui.COLOR_BUTTON_ACTIVE, 0.5, 0.1, 0.1, 1.0)
-        if imgui.button(button_label, width=button_width, height=button_height):
-            self._run_fusion()
-            self._rgb_tracked_all_cache_epoch += 1
-            self._rgb_tracked_all_color_cache = None
-            self._rgb_tracked_all_color_mode_cache = None
-            self._rebuild_rgb_projections()
-        if fusion_out_of_date:
-            imgui.pop_style_color(3)
-
-        imgui.separator()
-
-        imgui.push_item_width(200)
-        prob_changed, new_prob = imgui.slider_float(
-            "3DBB Conf Thresh", self.prob_threshold, 0.0, 1.0
-        )
-        if prob_changed:
-            self.prob_threshold = new_prob
-            self._cached_filtered_obbs = None
-        imgui.pop_item_width()
-
-        imgui.push_item_width(200)
-        _changed, self.fusion_semantic_threshold = imgui.slider_float(
-            "Semantic Merge Thresh", self.fusion_semantic_threshold, 0.0, 1.0
-        )
-        imgui.pop_item_width()
-
-        imgui.separator()
-
-        if self.fusion_enable_nms:
+        _changed, self.show_rgb = imgui.checkbox("Show RGB Panel", self.show_rgb)
+        if self.show_rgb:
             imgui.push_item_width(200)
-            _changed, self.fusion_nms_iou_threshold = imgui.slider_float(
-                "NMS IoU Thresh", self.fusion_nms_iou_threshold, 0.5, 1.0
+            _changed, self.rgb_panel_max_frac = imgui.slider_float(
+                "RGB Panel Width", self.rgb_panel_max_frac, 0.25, 0.75
             )
             imgui.pop_item_width()
-
-        imgui.text("Detection Statistics")
-        filtered_obbs, _ = self._get_filtered_obbs()
-        current_detections = len(filtered_obbs)
-        imgui.text(f"Shown: {current_detections} / {self.total_detections}")
-        if self.total_detections > 0:
-            percentage = (current_detections / self.total_detections) * 100
-            imgui.text(f"  ({percentage:.1f}%)")
-
-        imgui.push_item_width(200)
-        color_mode_names = ["Semantic", "PCA", "Prob", "Semantic Alt", "Random"]
-        changed, self.color_mode = imgui.combo(
-            "Color Mode", self.color_mode, color_mode_names
-        )
-        if changed:
-            self._build_geometry_cache()
-            if self.tracked_all_instances:
-                self._build_tracked_all_geometry()
-            self._rgb_tracked_all_color_cache = None
-            self._rgb_tracked_all_color_mode_cache = None
-            self._rebuild_rgb_projections()
-
-        if self.color_mode == COLOR_MODE_SEMANTIC:
-            imgui.text_colored("  Text-based semantic matching", 0.3, 0.6, 1.0)
-        elif self.color_mode == COLOR_MODE_PCA:
-            imgui.text_colored("  PCA of text embeddings", 0.3, 1.0, 0.3)
-        elif self.color_mode == COLOR_MODE_PROBABILITY:
-            imgui.text_colored("  Jet colormap by probability", 1.0, 0.5, 0.0)
-        elif self.color_mode == COLOR_MODE_SEMANTIC_ALT:
-            imgui.text_colored("  Semantic (white bg friendly)", 0.4, 0.4, 0.65)
-
-        imgui.separator()
-
-        imgui.text("Fusion Parameters")
-        imgui.push_item_width(200)
-        _changed, self.fusion_iou_threshold = imgui.slider_float(
-            "IOU Threshold", self.fusion_iou_threshold, 0.0, 1.0
-        )
-        _changed, self.fusion_min_detections = imgui.slider_int(
-            "Min Detections", self.fusion_min_detections, 1, 10
-        )
-        _changed, self.fusion_samp_per_dim = imgui.slider_int(
-            "IoU Samples", self.fusion_samp_per_dim, 1, 32
-        )
-        imgui.pop_item_width()
-
-        imgui.push_item_width(200)
-        weighting_modes = ["uniform", "linear", "quadratic", "robust"]
-        current_idx = weighting_modes.index(self.fusion_confidence_weighting)
-        weighting_changed, new_idx = imgui.combo(
-            "Confidence Weighting", current_idx, weighting_modes
-        )
-        if weighting_changed:
-            self.fusion_confidence_weighting = weighting_modes[new_idx]
-        imgui.pop_item_width()
-
-        imgui.separator()
-
-        _changed, self.fusion_enable_nms = imgui.checkbox(
-            "Enable Fused NMS", self.fusion_enable_nms
-        )
-        if imgui.is_item_hovered():
-            imgui.begin_tooltip()
-            imgui.text("Remove redundant fused boxes with:")
-            imgui.text("  • IoU > threshold")
-            imgui.text("  • Semantic similarity > threshold")
-            imgui.end_tooltip()
-
-        if self.tracked_all_instances:
-            imgui.text(f"Fused: {len(self.tracked_all_instances)} instances")
-            total_detections = sum(
-                inst.support_count for inst in self.tracked_all_instances
+            _changed, self.show_rgb_obbs = imgui.checkbox(
+                "Show RGB OBBs", self.show_rgb_obbs
             )
-            imgui.text(f"  From: {total_detections} detections")
-
-    def _render_main_controls(self) -> None:
-        """Render the main control panel UI."""
-        self._section_header("Playback")
-
-        # Playback controls (RGB timeline)
-        if imgui.button(
-            "Play" if not self.is_playing else "Pause", width=90, height=28
-        ):
-            self.is_playing = not self.is_playing
-            self._last_step_time = time_module.time()
-        imgui.same_line()
-        if imgui.button("<", width=30, height=28):
-            self.is_playing = False
-            self._step_to_frame(self.current_frame_idx - 1)
-        imgui.same_line()
-        if imgui.button(">", width=30, height=28):
-            self.is_playing = False
-            self._step_forward()
-
-        if self.total_frames > 0:
-            imgui.push_item_width(300)
-            changed, new_frame = imgui.slider_int(
-                "Frame",
-                self.current_frame_idx,
-                0,
-                max(0, self.total_frames - 1),
+            _changed, self.show_rgb_raw = imgui.checkbox(
+                "Show RGB Raw", self.show_rgb_raw
             )
-            if changed:
-                self.is_playing = False
-                self._step_to_frame(new_frame)
-            imgui.pop_item_width()
-
+            _changed, self.show_rgb_tracked_visible = imgui.checkbox(
+                "Show RGB Tracked Visible", self.show_rgb_tracked_visible
+            )
+            _changed, self.show_rgb_tracked_all = imgui.checkbox(
+                "Show RGB Tracked All", self.show_rgb_tracked_all
+            )
+            _changed, self.show_rgb_labels = imgui.checkbox(
+                "Show RGB Labels", self.show_rgb_labels
+            )
             imgui.push_item_width(200)
-            _changed, self.playback_fps = imgui.slider_float(
-                "Playback FPS", self.playback_fps, 0.5, 60.0
+            _changed, self.rgb_obb_thickness = imgui.slider_float(
+                "RGB 3DBB Width", self.rgb_obb_thickness, 1.0, 10.0
+            )
+            _changed, self.rgb_text_scale = imgui.slider_float(
+                "RGB Text Scale", self.rgb_text_scale, 0.5, 5.0
             )
             imgui.pop_item_width()
-            imgui.text("Space: play/pause, Left/Right: step")
-        self._render_fusion_controls()
-
-        self._section_header("Visualization")
-        self._render_common_visual_controls()
-
-        self._section_header("Camera")
-        if imgui.button("Focus on Scene"):
-            self._focus_on_scene()
-        imgui.same_line()
-        if imgui.button("Screenshot"):
-            self._save_screenshot()
-        imgui.same_line()
-        if imgui.button("Save View"):
-            self._save_camera_view()
-
-        self._section_header("Export")
-        # Disable export button if no fused instances
-        has_tracked_all = len(self.tracked_all_instances) > 0
-        if not has_tracked_all:
-            imgui.push_style_color(imgui.COLOR_BUTTON, 0.3, 0.3, 0.3, 1.0)
-            imgui.push_style_color(imgui.COLOR_BUTTON_HOVERED, 0.3, 0.3, 0.3, 1.0)
-            imgui.push_style_color(imgui.COLOR_BUTTON_ACTIVE, 0.3, 0.3, 0.3, 1.0)
-            imgui.push_style_color(imgui.COLOR_TEXT, 0.5, 0.5, 0.5, 1.0)
-
-        if imgui.button("Export Fused OBBs to ADT"):
-            if has_tracked_all:
-                self._export_tracked_all_obbs_adt()
-
-        if not has_tracked_all:
-            imgui.pop_style_color(4)
-            if imgui.is_item_hovered(imgui.HOVERED_ALLOW_WHEN_DISABLED):
-                imgui.begin_tooltip()
-                imgui.text("Run fusion first to enable export")
-                imgui.end_tooltip()
-
-        self._section_header("Scene Data")
-
-    def _export_tracked_all_obbs_adt(self) -> None:
-        """Export fused OBBs in ADT format using dump_obbs_adt."""
-        if not self.tracked_all_instances:
-            print("No fused instances to export. Run fusion first.")
-            return
-
-        # Stack all tracked-all OBBs into a single tensor
-        tracked_all_obbs_list = [
-            instance.obb for instance in self.tracked_all_instances
-        ]
-        tracked_all_obbs = torch.stack(tracked_all_obbs_list)
-
-        # Assign unique instance IDs to each fused box
-        ids = torch.arange(len(tracked_all_obbs), dtype=torch.int32)
-        tracked_all_obbs.set_inst_id(ids)
-
-        # Create timed_obbs dict with a single timestamp (static scene)
-        # Use timestamp -1 for static fused boxes
-        timed_obbs = {-1: tracked_all_obbs}
-
-        # Export to ADT format
-        output_path = os.path.join(self.root_path, "tracked_all_adt_export")
-        os.makedirs(output_path, exist_ok=True)
-
-        print(
-            f"\n=== Exporting {len(tracked_all_obbs)} Tracked-All OBBs to ADT Format ==="
+        imgui.push_item_width(200)
+        _changed, self.traj_alpha = imgui.slider_float(
+            "Traj Alpha", self.traj_alpha, 0.0, 1.0
         )
-        print(f"Output path: {output_path}")
+        changed, self.traj_tail_secs = imgui.slider_float(
+            "Traj Tail (s)", self.traj_tail_secs, 0.5, 30.0
+        )
+        if changed and self.total_frames > 0:
+            ts = self.sorted_timestamps[self.current_frame_idx]
+            self._update_trajectory_tail(ts)
+        changed, self.frustum_scale = imgui.slider_float(
+            "Frustum Scale", self.frustum_scale, 0.001, 0.5
+        )
+        if changed and self.total_frames > 0:
+            ts = self.sorted_timestamps[self.current_frame_idx]
+            cam, T_wr = self._get_cam_and_pose(ts)
+            if cam is not None and T_wr is not None:
+                self._build_frustum_geometry(cam, T_wr)
+        imgui.pop_item_width()
 
-        dump_obbs_adt(output_path, timed_obbs)
 
-        print("=== Export Complete ===\n")
-
-
-class TrackerViewer(OBBViewer):
+class TrackerViewer(SequenceOBBViewer):
     """Online 3D bounding box tracker visualization.
 
-    Subclasses OBBViewer to reuse all rendering infrastructure (shaders, GPU
+    Subclasses SequenceOBBViewer to reuse all rendering infrastructure (shaders, GPU
     geometry building, 3D rendering pipeline) while adding frame-by-frame
     playback and tracker parameter controls.
     """
@@ -3064,9 +3010,6 @@ class TrackerViewer(OBBViewer):
         scannet_annotation_path: str = "~/data/scannet/full_annotations.json",
         seq_ctx: dict | None = None,
         freeze_tracker: bool = False,
-        detect_fn=None,
-        loader_iter=None,
-        writer=None,
         **kwargs: Any,
     ) -> None:
         """Initialize tracker viewer.
@@ -3078,24 +3021,12 @@ class TrackerViewer(OBBViewer):
             seq_ctx: Pre-built sequence context dict. When provided, skips
                 _load_sequence_context_auto() and uses this context directly.
             freeze_tracker: If True, don't run tracker updates (fuse mode).
-            detect_fn: Callable that takes a datum and returns (ObbTW, time_ns) or (None, time_ns).
-            loader_iter: Iterator over data loader for online detection.
-            writer: ObbCsvWriter2 for writing detections as they are computed.
         """
-        self._detect_fn = detect_fn
-        self._loader_iter = loader_iter
-        self._writer = writer
-        self._next_unprocessed_idx = 0
-        self._online_mode = detect_fn is not None
         self._prebuilt_seq_ctx = seq_ctx
         t_init0 = time_module.perf_counter()
         _startup_log("TrackerViewer init start")
         self.timed_obbs = timed_obbs
-        if self._online_mode:
-            # Online mode: precompute the timestamps the loader will actually yield
-            self.sorted_timestamps = self._precompute_loader_timestamps(seq_ctx)
-        else:
-            self.sorted_timestamps = sorted(timed_obbs.keys())
+        self.sorted_timestamps = sorted(timed_obbs.keys())
         self.total_frames = len(self.sorted_timestamps)
         if self.total_frames >= 2:
             deltas_ns = [
@@ -3298,9 +3229,8 @@ class TrackerViewer(OBBViewer):
         self._bb2d_data: Optional[Dict[int, dict]] = None
         self._bb2d_timestamps: Optional[np.ndarray] = None
         self._bb2d_current_boxes: list[tuple[float, float, float, float, str, int]] = []
-        self.show_bb2_panel = True  # toggle for the top BB2 panel
+        self.show_bb2_panel = True  # toggle for the top BB2 panel (per-frame 2D detections)
         self.show_bb2_csv = True  # toggle CSV BB2s in top panel
-        self.show_bb2_pseudo = False  # toggle pseudo BB2s in top panel
         self.overlay_bb2d = init_overlay2d  # overlay 2D BBs on bottom RGB panel
         if bb2d_csv_path and os.path.exists(bb2d_csv_path):
             self._bb2d_data = load_bb2d_csv(bb2d_csv_path)
@@ -3410,7 +3340,7 @@ class TrackerViewer(OBBViewer):
 
         # Get initial OBBs: all frames when frozen (fuse mode), first frame otherwise
         self._all_frames_obbs = None  # cached stacked OBBs for fuse mode
-        if self.total_frames > 0 and not self._online_mode:
+        if self.total_frames > 0:
             if self.freeze_tracker:
                 all_obbs_list = []
                 for ts in self.sorted_timestamps:
@@ -3424,10 +3354,6 @@ class TrackerViewer(OBBViewer):
 
         # Initialize parent — skip embedding precomputation and initial geometry build
         # since the tracker builds its own geometry per frame in _rebuild_current_view()
-        # Save online timestamps before super().__init__ overwrites them
-        _saved_sorted_timestamps = self.sorted_timestamps
-        _saved_total_frames = self.total_frames
-
         super().__init__(
             all_obbs=all_obbs_for_init,
             root_path=root_path,
@@ -3437,11 +3363,6 @@ class TrackerViewer(OBBViewer):
             seq_ctx=self._prebuilt_seq_ctx,
             **kwargs,
         )
-
-        # Restore online timestamps (parent's __init__ overwrites from empty timed_obbs)
-        if self._online_mode:
-            self.sorted_timestamps = _saved_sorted_timestamps
-            self.total_frames = _saved_total_frames
 
         _startup_log(
             f"TrackerViewer base init complete in {(time_module.perf_counter() - t_init0):.2f}s"
@@ -3469,9 +3390,6 @@ class TrackerViewer(OBBViewer):
         self.outline_instance_vbo = None
         self.outline_instance_vao = None
         self.outline_instance_count = 0
-        # Base class renders trajectory/frustum overlays.
-        self._render_navigation_overlays_in_base = True
-        self._handle_playback_in_base = False
         self._build_trajectory_geometry()
         self._load_semidense_points()
         if init_show_obs:
@@ -3538,7 +3456,7 @@ class TrackerViewer(OBBViewer):
         if self._rgb_texture is not None and self.show_rgb:
             tex_w, tex_h = self._rgb_tex_size
             tex_aspect = tex_w / tex_h if tex_h > 0 else 1.0
-            show_top = self.show_bb2_panel and self._bb2d_data is not None
+            show_top = self.show_bb2_panel
             is_portrait = tex_aspect <= 1.0
             side_by_side = show_top and is_portrait
             if side_by_side:
@@ -3936,71 +3854,6 @@ class TrackerViewer(OBBViewer):
                 [(self.obs_point_vbo, "3f 3f", "in_position", "in_color")],
             )
 
-    @staticmethod
-    def _precompute_loader_timestamps(seq_ctx):
-        """Get timestamps for frames the loader will actually yield.
-
-        Uses the AriaLoader's index/skip_n/max_n/end_index to query VRS
-        timestamps for each frame that will be produced by __next__().
-        Falls back to rgb_timestamps from seq_ctx if loader doesn't support this.
-        """
-        if seq_ctx is None:
-            return []
-        loader = seq_ctx.get("loader", None)
-        if loader is None:
-            return sorted(seq_ctx["rgb_timestamps"].tolist())
-
-        # AriaLoader: compute exact timestamps for each frame the iterator will yield
-        if hasattr(loader, "provider") and hasattr(loader, "stream_id") and hasattr(loader, "index"):
-            timestamps = []
-            stream_id = loader.stream_id[0]
-            idx = loader.index
-            count = 0
-            while idx <= loader.end_index and count < loader.max_n:
-                try:
-                    _, record = loader.provider.get_image_data_by_index(stream_id, idx)
-                    timestamps.append(record.capture_timestamp_ns)
-                except Exception:
-                    pass
-                idx += loader.skip_n
-                count += 1
-            if len(timestamps) > 0:
-                return timestamps
-
-        return sorted(seq_ctx["rgb_timestamps"].tolist())
-
-    def _detect_next_frame(self):
-        """Load next frame from iterator, run detection, store in timed_obbs."""
-        if self._loader_iter is None:
-            return
-        try:
-            datum = next(self._loader_iter)
-        except StopIteration:
-            return
-        if datum is False:
-            self._next_unprocessed_idx += 1
-            return
-
-        result = self._detect_fn(datum)
-        obb_pr_w, time_ns = result
-
-        if obb_pr_w is not None and len(obb_pr_w) > 0:
-            self.timed_obbs[time_ns] = obb_pr_w
-        else:
-            self.timed_obbs[time_ns] = ObbTW(torch.zeros(0, 165))
-
-        if self._writer is not None:
-            sem_id_to_name = {}
-            if obb_pr_w is not None and len(obb_pr_w) > 0:
-                for obb in obb_pr_w:
-                    sid = int(obb.sem_id.item())
-                    if sid not in sem_id_to_name:
-                        sem_id_to_name[sid] = unpad_string(tensor2string(obb.text.int()))
-            self._writer.write(obb_pr_w if obb_pr_w is not None else ObbTW(torch.zeros(0, 165)),
-                               time_ns, sem_id_to_name=sem_id_to_name)
-
-        self._next_unprocessed_idx += 1
-
     def _step_to_frame(self, target_idx: int) -> None:
         """Advance tracker to the target frame index.
 
@@ -4017,11 +3870,6 @@ class TrackerViewer(OBBViewer):
             target_idx = 0
         if target_idx >= self.total_frames:
             target_idx = self.total_frames - 1
-
-        # Online detection: process frames up to target
-        if self._online_mode and target_idx >= self._next_unprocessed_idx:
-            for _ in range(self._next_unprocessed_idx, target_idx + 1):
-                self._detect_next_frame()
 
         if self.freeze_tracker:
             # Skip tracker updates — just move the frame pointer
@@ -4097,7 +3945,7 @@ class TrackerViewer(OBBViewer):
     @staticmethod
     def _init_boxy_ref_data() -> dict:
         """Load text embedder and precompute reference embeddings."""
-        from detectors.clip_tokenizer import TextEmbedder
+        from owl.clip_tokenizer import TextEmbedder
         from utils.taxonomy import (
             BOXY_SEM2NAME,
             SSI_COLORS_ALT,
@@ -4323,7 +4171,6 @@ class TrackerViewer(OBBViewer):
         self._rgb_projected_labels = []
         self._rgb_projected_tracked_all_labels = []
         self._rgb_projected_tracked_visible_labels = []
-        self._rgb_projected_bb2s = []
 
         # Raw detections projected into RGB (gray), independent of tracked state.
         if len(current_detections) > 0:
@@ -4691,17 +4538,6 @@ class TrackerViewer(OBBViewer):
                         if is_vis_i:
                             self._rgb_projected_tracked_visible_labels.append(
                                 label_item
-                            )
-                        # Pseudo BB2 from projected sub-points (reuses wireframe points)
-                        num_valid = int(v.sum())
-                        num_total = 12 * S  # 12 edges × (N_SUB+1) samples
-                        if num_valid >= int(num_total * 0.16667):
-                            xmin = float(all_valid_pts[:, 0].min())
-                            ymin = float(all_valid_pts[:, 1].min())
-                            xmax = float(all_valid_pts[:, 0].max())
-                            ymax = float(all_valid_pts[:, 1].max())
-                            self._rgb_projected_bb2s.append(
-                                (xmin, ymin, xmax, ymax, rgb_colors_np[i])
                             )
         else:
             outline_data = None
@@ -5371,13 +5207,10 @@ class TrackerViewer(OBBViewer):
                 self._rebuild_current_view()
             imgui.pop_item_width()
 
+        _changed, self.show_bb2_panel = imgui.checkbox(
+            "Show 2DBB Panel", self.show_bb2_panel
+        )
         if self._bb2d_data is not None:
-            _changed, self.show_bb2_panel = imgui.checkbox(
-                "Show BB2 Panel", self.show_bb2_panel
-            )
-            _changed, self.show_bb2_pseudo = imgui.checkbox(
-                "Show BB2 Pseudo", self.show_bb2_pseudo
-            )
             _changed, self.show_bb2_csv = imgui.checkbox(
                 "Show BB2 CSV", self.show_bb2_csv
             )
@@ -5505,7 +5338,7 @@ class TrackerViewer(OBBViewer):
             tex_aspect = tex_w / tex_h if tex_h > 0 else 1.0
 
             # Determine panel layout: stacked or side-by-side for portrait images
-            show_top = self.show_bb2_panel and self._bb2d_data is not None
+            show_top = self.show_bb2_panel
             is_portrait = tex_aspect <= 1.0
             side_by_side = show_top and is_portrait
 
@@ -5543,7 +5376,7 @@ class TrackerViewer(OBBViewer):
                     imgui.set_next_window_size(panel_w, top_h, imgui.ALWAYS)
                 imgui.set_next_window_collapsed(False, imgui.ONCE)
                 expanded, _ = imgui.begin(
-                    "2D Bounding Boxes",
+                    "Per-Frame 2D Detections",
                     flags=imgui.WINDOW_NO_RESIZE | imgui.WINDOW_NO_MOVE,
                 )
                 if expanded:
@@ -5557,19 +5390,22 @@ class TrackerViewer(OBBViewer):
                     scale_y = draw_h / tex_h * self._rgb_img_scale
                     draw_list = imgui.get_window_draw_list()
 
-                    # Draw pseudo BB2s (track-colored, 2px)
-                    if self.show_bb2_pseudo and self._rgb_projected_bb2s:
-                        for xmin, ymin, xmax, ymax, color in self._rgb_projected_bb2s:
+                    # Draw raw per-frame 3DBB projections
+                    if self.show_rgb_obbs and self._rgb_projected_raw_lines:
+                        for edge_pts, edge_valid, color in self._rgb_projected_raw_lines:
                             col = imgui.get_color_u32_rgba(
                                 float(color[0]), float(color[1]), float(color[2]), 1.0
                             )
-                            rx0 = img_min.x + xmin * scale_x
-                            ry0 = img_min.y + ymin * scale_y
-                            rx1 = img_min.x + xmax * scale_x
-                            ry1 = img_min.y + ymax * scale_y
-                            draw_list.add_rect(
-                                rx0, ry0, rx1, ry1, col, 0.0, 0, self.rgb_bb2_thickness
-                            )
+                            for e in range(edge_pts.shape[0]):
+                                for s in range(edge_pts.shape[1] - 1):
+                                    if edge_valid[e, s] and edge_valid[e, s + 1]:
+                                        x0 = img_min.x + edge_pts[e, s, 0] * scale_x
+                                        y0 = img_min.y + edge_pts[e, s, 1] * scale_y
+                                        x1 = img_min.x + edge_pts[e, s + 1, 0] * scale_x
+                                        y1 = img_min.y + edge_pts[e, s + 1, 1] * scale_y
+                                        draw_list.add_line(
+                                            x0, y0, x1, y1, col, self.rgb_obb_thickness
+                                        )
 
                     # Draw CSV BB2s (green, or per-class random color)
                     if self.show_bb2_csv and self._bb2d_current_boxes:
@@ -5779,303 +5615,3 @@ class TrackerViewer(OBBViewer):
             imgui.end()
         else:
             self._rgb_panel_rect = None
-
-
-def _load_timed_obbs(args: argparse.Namespace, root_path: str, csv_path: str):
-    """Load timed OBBs for either CSV detections or ADT input."""
-
-    def _subsample_timed_obbs_by_skip_n(
-        timed_obbs_in: dict[int, ObbTW], skip_n: int
-    ) -> dict[int, ObbTW]:
-        if skip_n <= 1 or len(timed_obbs_in) <= 1:
-            return timed_obbs_in
-        sorted_ts = sorted(timed_obbs_in.keys())
-        kept_ts = sorted_ts[::skip_n]
-        out = {ts: timed_obbs_in[ts] for ts in kept_ts}
-        print(
-            f"Applied --skip_n={skip_n}: kept {len(out)} / {len(timed_obbs_in)} frames"
-        )
-        return out
-
-    def _slice_timed_obbs_start_max(
-        timed_obbs_in: dict[int, ObbTW], start_n: int, max_n: int
-    ) -> dict[int, ObbTW]:
-        sorted_ts = sorted(timed_obbs_in.keys())
-        if start_n > 0:
-            sorted_ts = sorted_ts[start_n:]
-            print(f"Applied --start_n={start_n}: {len(sorted_ts)} frames remain")
-        if max_n > 0 and len(sorted_ts) > max_n:
-            sorted_ts = sorted_ts[:max_n]
-            print(f"Truncated to first {max_n} frames after start/skip")
-        return {ts: timed_obbs_in[ts] for ts in sorted_ts}
-
-    if args.fuse and args.adt_dir:
-        from loaders.aria_loader import get_T_zup_yup
-
-        timed_obbs = load_obbs_adt(args.adt_dir, only_3d=True)
-        print(f"Loaded {len(timed_obbs)} frames from ADT dir {args.adt_dir}")
-
-        traj_path = os.path.expanduser(
-            f"~/boxy_data/{args.seq}/closed_loop_trajectory.csv"
-        )
-        if os.path.exists(traj_path):
-            gravity_dir = probe_gravity_direction(traj_path)
-            print(f"Detected gravity direction: {gravity_dir}")
-            if gravity_dir == "y":
-                print("==> Transforming ADT OBBs from Y-up to Z-up")
-                T_zup_yup = get_T_zup_yup()
-                for ts in timed_obbs:
-                    for i, obb in enumerate(timed_obbs[ts]):
-                        T_zup_yup_cast = T_zup_yup.to(obb.T_world_object.R.dtype)
-                        timed_obbs[ts][i].set_T_world_object(
-                            T_zup_yup_cast @ obb.T_world_object
-                        )
-        timed_obbs = _slice_timed_obbs_start_max(timed_obbs, args.start_n, args.max_n)
-        timed_obbs = _subsample_timed_obbs_by_skip_n(timed_obbs, args.skip_n)
-        return timed_obbs
-
-    bb2d_path = os.path.join(root_path, args.bb2d_csv)
-    timed_obbs = read_obb_csv(csv_path)
-    timed_obbs = _slice_timed_obbs_start_max(timed_obbs, args.start_n, args.max_n)
-    return _subsample_timed_obbs_by_skip_n(timed_obbs, args.skip_n)
-
-
-def _stack_all_obbs(timed_obbs):
-    all_obbs_list = []
-    for ts in sorted(timed_obbs.keys()):
-        all_obbs_list.extend(timed_obbs[ts])
-    if not all_obbs_list:
-        return ObbTW(torch.zeros(0, 165))
-    return torch.stack(all_obbs_list)
-
-
-def _main() -> None:
-    """Standalone entry point for viz_boxer.py (preserved for backward compat)."""
-    import sys as _sys
-    original_argv = _sys.argv.copy()
-    _sys.argv = [_sys.argv[0]]
-
-    parser = argparse.ArgumentParser(description="Unified Boxer visualization")
-    mode = parser.add_mutually_exclusive_group(required=True)
-    mode.add_argument("--fuse", action="store_true", help="offline fusion mode")
-    mode.add_argument("--track", action="store_true", help="online tracker mode")
-
-    # Common args
-    parser.add_argument("--seq", type=str, default="sor01")
-    parser.add_argument("--root_dir", type=str, default="", help="Root directory for sequence data (default: ~/viz_boxer)")
-    parser.add_argument("--csv", type=str, default="boxer_3dbbs.csv")
-    parser.add_argument("--force_anything", action="store_true")
-    parser.add_argument(
-        "--load_view", type=str, nargs="?", const="DEFAULT", default=None
-    )
-    parser.add_argument("--fps", type=float, default=30.0)
-    parser.add_argument(
-        "--record_fps",
-        type=float,
-        default=0.0,
-        help="Recording FPS for tracker mp4 (0 = auto from RGB timestamps)",
-    )
-    parser.add_argument(
-        "--window_h",
-        type=int,
-        default=0,
-        help="Initial window height (0 = default)",
-    )
-    parser.add_argument(
-        "--window_w",
-        type=int,
-        default=0,
-        help="Initial window width (0 = default)",
-    )
-    parser.add_argument(
-        "--init_follow_behind",
-        type=float,
-        default=None,
-        help="Initial follow-view behind distance (meters)",
-    )
-    parser.add_argument(
-        "--init_follow",
-        action="store_true",
-        help="Initialize tracker with Follow View enabled",
-    )
-    parser.add_argument(
-        "--init_follow_above",
-        type=float,
-        default=None,
-        help="Initial follow-view above distance (meters)",
-    )
-    parser.add_argument(
-        "--init_follow_look_ahead",
-        type=float,
-        default=None,
-        help="Initial follow-view look-ahead distance (meters)",
-    )
-    parser.add_argument(
-        "--init_color_mode",
-        type=str,
-        default=None,
-        help="Initial 3DBB color mode (e.g. random, semantic, pca, prob, semantic_alt; "
-        "tracker also supports confidence, boxy, boxy_alt, text_pca)",
-    )
-    parser.add_argument(
-        "--init_rgb_text_scale",
-        type=float,
-        default=None,
-        help="Initial RGB label text scale",
-    )
-    parser.add_argument(
-        "--init_overlay2d",
-        action="store_true",
-        help="Overlay 2D BBs on the bottom RGB panel with low alpha",
-    )
-    parser.add_argument(
-        "--init_image_panel_width",
-        type=float,
-        default=None,
-        help="Initial image panel width as fraction of window (0.25-0.75, default 0.45)",
-    )
-
-    # Tracker-oriented
-    parser.add_argument("--max_n", type=int, default=0)
-    parser.add_argument("--start_n", type=int, default=0)
-    parser.add_argument("--skip_n", type=int, default=1)
-    parser.add_argument("--mps", action="store_true")
-    parser.add_argument("--bb2d_csv", type=str, default="boxer_2dbbs.csv")
-    parser.add_argument(
-        "--init_show_obs", action="store_true", help="initially show observed points"
-    )
-    parser.add_argument("--autorecord", action="store_true")
-    parser.add_argument("--teaser", action="store_true")
-    parser.add_argument("--already_tracked", action="store_true")
-    parser.add_argument(
-        "--verbose", action="store_true", help="Enable verbose tracker logging"
-    )
-
-    parser.add_argument("--adt_dir", type=str, default=None)
-    parser.add_argument(
-        "--scannet_scene",
-        type=str,
-        default=None,
-        help="Path to ScanNet scene directory (enables ScanNetLoader path)",
-    )
-    parser.add_argument(
-        "--scannet_annotation_path",
-        type=str,
-        default="~/data/scannet/full_annotations.json",
-        help="Path to Scan2CAD full_annotations.json for ScanNet mode",
-    )
-    args = parser.parse_args(original_argv[1:])
-
-    def _resolve_root_and_csv(seq_name, csv_name, root_dir=""):
-        if not root_dir:
-            root_dir = os.path.join(os.path.expanduser("~"), "viz_boxer")
-        root_path = os.path.join(root_dir, seq_name)
-        csv_path = os.path.join(root_path, csv_name)
-        return root_path, csv_path
-
-    def _resolve_and_load_view(root_path, load_view):
-        view_path = os.path.join(root_path, "camera_view.pt")
-        if load_view is None:
-            return view_path, None
-        target = view_path if load_view == "DEFAULT" else load_view
-        if os.path.exists(target):
-            data = torch.load(target, weights_only=False)
-            print(f"Loaded camera view from {target}")
-            return view_path, data
-        print(f"No saved view at {target}")
-        return view_path, None
-
-    effective_seq = (
-        os.path.basename(args.scannet_scene.rstrip("/"))
-        if args.scannet_scene is not None
-        else args.seq
-    )
-    root_path, csv_path = _resolve_root_and_csv(effective_seq, args.csv, args.root_dir)
-    timed_obbs = _load_timed_obbs(args, root_path, csv_path)
-    print(
-        f"Effective OBB range: start_n={args.start_n}, "
-        f"max_n={args.max_n if args.max_n > 0 else 'all'}, skip_n={args.skip_n}"
-    )
-    if len(timed_obbs) > 0:
-        ts_sorted = sorted(timed_obbs.keys())
-        print(
-            f"  OBB timestamps: first={ts_sorted[0]}, last={ts_sorted[-1]}, "
-            f"frames={len(ts_sorted)}"
-        )
-    else:
-        print("  OBB timestamps: empty")
-    total_dets = sum(len(obbs) for obbs in timed_obbs.values())
-    print(f"Loaded {len(timed_obbs)} frames, {total_dets} detections total")
-
-    view_path, load_view_data = _resolve_and_load_view(root_path, args.load_view)
-    default_w, default_h = 2250, 1100
-    init_w = args.window_w if args.window_w > 0 else default_w
-    init_h = args.window_h if args.window_h > 0 else default_h
-
-    if args.fuse:
-        all_obbs = _stack_all_obbs(timed_obbs)
-
-        class ConfiguredFusionViewer(OBBViewer):
-            window_size = (init_w, init_h)
-
-            def __init__(self, **kwargs: Any) -> None:
-                super().__init__(
-                    all_obbs=all_obbs,
-                    timed_obbs=timed_obbs,
-                    root_path=root_path,
-                    loader_max_frames=args.max_n,
-                    loader_start_frame=args.start_n,
-                    init_rgb_text_scale=args.init_rgb_text_scale,
-                    init_color_mode=args.init_color_mode,
-                    init_image_panel_width=args.init_image_panel_width,
-                    load_view_data=load_view_data,
-                    view_save_path=view_path,
-                    seq_name=effective_seq,
-                    scannet_scene=args.scannet_scene,
-                    scannet_annotation_path=args.scannet_annotation_path,
-                    **kwargs,
-                )
-                self.playback_fps = max(0.1, args.fps)
-
-        mglw.run_window_config(ConfiguredFusionViewer)
-        return
-
-    bb2d_csv_path = os.path.join(root_path, args.bb2d_csv)
-
-    class ConfiguredTrackerViewer(TrackerViewer):
-        window_size = (init_w, init_h)
-
-        def __init__(self, **kwargs: Any) -> None:
-            super().__init__(
-                timed_obbs=timed_obbs,
-                root_path=root_path,
-                loader_max_frames=args.max_n,
-                loader_start_frame=args.start_n,
-                init_rgb_text_scale=args.init_rgb_text_scale,
-                init_color_mode=args.init_color_mode,
-                init_follow=args.init_follow,
-                init_follow_behind=args.init_follow_behind,
-                init_follow_above=args.init_follow_above,
-                init_follow_look_ahead=args.init_follow_look_ahead,
-                force_cpu=not args.mps,
-                bb2d_csv_path=bb2d_csv_path,
-                init_overlay2d=args.init_overlay2d,
-                autorecord=args.autorecord,
-                record_fps=args.record_fps,
-                teaser=args.teaser,
-                already_tracked=args.already_tracked,
-                init_show_obs=args.init_show_obs,
-                init_image_panel_width=args.init_image_panel_width,
-                verbose=args.verbose,
-                load_view_data=load_view_data,
-                view_save_path=view_path,
-                scannet_scene=args.scannet_scene,
-                scannet_annotation_path=args.scannet_annotation_path,
-                **kwargs,
-            )
-
-    mglw.run_window_config(ConfiguredTrackerViewer)
-
-
-if __name__ == "__main__":
-    _main()
