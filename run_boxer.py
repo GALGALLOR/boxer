@@ -239,33 +239,6 @@ def main():
         device = "cpu"
     print(f"==> Using device {device}")
 
-    # Handle --labels=gt: extract unique names from loader's sem_id_to_name
-    if args.labels == ["gt"]:
-        if hasattr(loader, "sem_id_to_name") and loader.sem_id_to_name:
-            # Extract unique names from sem_id_to_name, filtering out structural classes
-            loader_label_names = []
-            for _sem_id, name in loader.sem_id_to_name.items():
-                # Skip floor/wall structural classes
-                if name.lower() in ["floor", "wall"]:
-                    continue
-                if name not in loader_label_names:
-                    loader_label_names.append(name)
-            if len(loader_label_names) == 0:
-                raise ValueError(
-                    "No valid semantic labels found in loader.sem_id_to_name after filtering"
-                )
-            args.labels = loader_label_names
-            print(
-                f"==> Using {len(loader_label_names)} labels from loader.sem_id_to_name"
-            )
-        else:
-            raise ValueError(
-                "--labels=gt requires the loader to have sem_id_to_name attribute. "
-                "This is available for CALoader (ca1m sequences) and AriaLoader with --gt2d."
-            )
-
-    _dbg("labels_gt")
-
     # Load text labels if they match special strings.
     text_labels = load_text_labels(args.labels)
     # Track taxonomy name for visualization

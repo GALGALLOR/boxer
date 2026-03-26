@@ -1,6 +1,7 @@
 # pyre-unsafe
 import io
 import os
+import time
 
 import torch
 import torch.nn.functional as F
@@ -95,6 +96,17 @@ class OwlWrapper(torch.nn.Module):
 
     def __init__(self, device="cuda", text_prompts=None, min_confidence=0.2, precision="float32", warmup=True):
         super().__init__()
+        _debug = os.environ.get("DEBUG", "0") == "1"
+        _t0 = time.perf_counter()
+        _tp = _t0
+
+        def _dbg(label):
+            nonlocal _tp
+            if not _debug:
+                return
+            now = time.perf_counter()
+            print(f"  [owl] {label}: {(now - _tp)*1000:.0f}ms (total: {(now - _t0)*1000:.0f}ms)", flush=True)
+            _tp = now
 
         if text_prompts is None:
             text_prompts = DEFAULT_TEXT_LABELS
@@ -113,6 +125,7 @@ class OwlWrapper(torch.nn.Module):
                 "See README for export instructions."
             )
         checkpoint = torch.load(_CKPT_PATH, map_location="cpu", weights_only=False)
+        _dbg("torch.load (881MB)")
 
         config = checkpoint["config"]
         self.image_mean = torch.tensor(config["image_mean"]).view(1, 3, 1, 1)
@@ -122,6 +135,7 @@ class OwlWrapper(torch.nn.Module):
         # Load traced text encoder (always on CPU, runs once at init)
         self.text_encoder = torch.jit.load(io.BytesIO(checkpoint["text_encoder"]), map_location="cpu")
         self.text_encoder.eval()
+        _dbg("jit text_encoder")
 
         self.device = device
         self.text_prompts = text_prompts
@@ -146,6 +160,7 @@ class OwlWrapper(torch.nn.Module):
             self.vision_detector.eval()
             if device == "mps":
                 self.vision_detector = self.vision_detector.to(device)
+        _dbg("jit vision_detector")
 
         # Load tokenizer from checkpoint data
         self.tokenizer = CLIPTokenizer(
@@ -153,9 +168,20 @@ class OwlWrapper(torch.nn.Module):
             merges=checkpoint["tokenizer_merges"],
             max_length=config["max_seq_length"],
         )
+        _dbg("tokenizer")
 
-        # Pre-compute and cache text embeddings
-        self.text_embeddings = self._encode_text(text_prompts)
+        # Pre-compute and cache text embeddings (cached to disk by prompt hash)
+        import hashlib
+        prompt_hash = hashlib.md5("\n".join(text_prompts).encode()).hexdigest()[:12]
+        cache_path = _CKPT_PATH.replace(".pt", f"_textemb_{prompt_hash}.pt")
+        if os.path.exists(cache_path):
+            self.text_embeddings = torch.load(cache_path, map_location=device, weights_only=True)
+            _dbg(f"load cached text embeddings ({len(text_prompts)} prompts)")
+        else:
+            self.text_embeddings = self._encode_text(text_prompts)
+            torch.save(self.text_embeddings.cpu(), cache_path)
+            self.text_embeddings = self.text_embeddings.to(device)
+            _dbg(f"encode_text ({len(text_prompts)} prompts) + save cache")
         self.query_mask = torch.ones(len(text_prompts), dtype=torch.bool, device=device)
 
         print(f"Loaded OWLv2 on {device} with {len(text_prompts)} text prompts, precision={'bfloat16' if self.use_bfloat16 else 'float32'}")
@@ -163,6 +189,7 @@ class OwlWrapper(torch.nn.Module):
         # Warmup
         if warmup:
             self._warmup()
+            _dbg("warmup")
 
     def _encode_text(self, prompts):
         """Tokenize and encode text prompts through the traced text encoder (runs on CPU)."""
@@ -182,7 +209,7 @@ class OwlWrapper(torch.nn.Module):
         self.text_embeddings = self._encode_text(prompts)
         self.query_mask = torch.ones(len(prompts), dtype=torch.bool, device=self.device)
 
-    def _warmup(self, steps=3):
+    def _warmup(self, steps=1):
         """Warmup the vision model with dummy inference."""
         H, W = self.native_size
         dummy = torch.zeros(1, 3, H, W, device=self.device)

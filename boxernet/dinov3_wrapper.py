@@ -30,9 +30,11 @@ from utils.demo_utils import CKPT_PATH
 from torch import nn, Tensor
 
 
-if hasattr(torch, "_dynamo"):
-    torch._dynamo.config.automatic_dynamic_shapes = False
-    torch._dynamo.config.accumulated_cache_size_limit = 1024
+def _configure_dynamo():
+    """Configure torch._dynamo settings lazily to avoid importing transformers/onnx at startup."""
+    if hasattr(torch, "_dynamo"):
+        torch._dynamo.config.automatic_dynamic_shapes = False
+        torch._dynamo.config.accumulated_cache_size_limit = 1024
 logger = logging.getLogger("dinov3")
 
 

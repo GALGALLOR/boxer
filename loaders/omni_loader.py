@@ -7,7 +7,7 @@ import cv2
 import numpy as np
 import torch
 from PIL import Image
-from utils.demo_utils import EVAL_PATH
+from utils.demo_utils import EVAL_PATH, SAMPLE_DATA_PATH
 from tw.camera import CameraTW, get_base_aria_rgb_camera
 from tw.obb import ObbTW
 from tw.pose import PoseTW
@@ -196,7 +196,14 @@ class OmniLoader(BaseLoader):
         with_da3_depth: bool = False,
     ):
         if data_root is None:
-            data_root = os.path.expanduser("~/data/Omni3D")
+            default = os.path.expanduser("~/data/Omni3D")
+            sample = os.path.join(SAMPLE_DATA_PATH, "Omni3D")
+            if os.path.isdir(default):
+                data_root = default
+            elif os.path.isdir(sample):
+                data_root = sample
+            else:
+                data_root = default
 
         self.data_root = data_root
         self.dataset_name = dataset_name
