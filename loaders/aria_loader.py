@@ -12,18 +12,17 @@ import cv2
 import numpy as np
 import torch
 from projectaria_tools.core import data_provider
-from tw.camera import CameraTW
+from utils.tw.camera import CameraTW
 from utils.file_io import (
-    load_causal_semidense,
     load_closed_loop_trajectory,
     load_obbs_adt,
     load_online_calib,
     load_semidense,
     probe_gravity_direction,
 )
-from tw.obb import bb2d_from_project_bb3d
-from tw.pose import PoseTW
-from tw.tensor_utils import find_nearest2
+from utils.tw.obb import bb2d_from_project_bb3d
+from utils.tw.pose import PoseTW
+from utils.tw.tensor_utils import find_nearest2
 
 
 def get_T_zup_yup():
@@ -73,8 +72,6 @@ class AriaLoader(BaseLoader):
         with_sdp=True,
         with_obb=False,
         use_description=False,
-        with_fsp=False,
-        causal_sd=False,
         pinhole=False,
         pinhole_fxy=None,
         resize=None,
@@ -84,7 +81,6 @@ class AriaLoader(BaseLoader):
         start_n=0,
         remove_structure=True,
         force_reload=False,
-        force_reload_object=False,
         target_time_ns=None,
         start_ts=None,
         is_adt="auto",
@@ -93,20 +89,13 @@ class AriaLoader(BaseLoader):
         obb_max_depth=None,  # Max distance (meters) from camera to keep OBBs
         restrict_range=True,  # restrict frames to intersection of modality time ranges.
     ):
-        # can't specify both with_sdp and with_fsp
-        if with_sdp and with_fsp:
-            raise ValueError("Can't specify both with_sdp and with_fsp")
-
         self.camera = camera
         self.with_img = with_img
         self.with_traj = with_traj
         self.with_sdp = with_sdp
         self.with_obb = with_obb
         self.use_description = use_description
-        self.with_fsp = with_fsp
-        self.causal_sd = causal_sd
         self.force_reload = force_reload
-        self.force_reload_object = force_reload_object
         self.obb_vis_thresh = obb_vis_thresh
         self.obb_min_size = obb_min_size
         self.obb_max_depth = obb_max_depth
@@ -119,8 +108,6 @@ class AriaLoader(BaseLoader):
         print(f"with_sdp: {with_sdp}")
         print(f"with_obb: {with_obb}")
         print(f"use_description: {use_description}")
-        print(f"with_fsp: {with_fsp}")
-        print(f"causal_sd: {causal_sd}")
         print(f"pinhole: {pinhole}")
         print(f"resize: {resize}")
         print(f"unrotate: {unrotate}")
@@ -265,7 +252,7 @@ class AriaLoader(BaseLoader):
             self.traj = traj
             self.pose_ts = pose_ts.numpy()
 
-        if self.with_sdp and not self.causal_sd:
+        if self.with_sdp:
             print("==> loading points")
             global_path = os.path.join(remote_root, "semidense_points.csv.gz")
             obs_path = os.path.join(remote_root, "semidense_observations.csv.gz")
@@ -309,60 +296,25 @@ class AriaLoader(BaseLoader):
                 self.p3_array[:, 1] = -old_z
                 self.p3_array[:, 2] = old_y
 
-        if self.with_fsp:
-            print("==> loading fsp")
-            fsp_path = os.path.join(self.local_root, "fsp")
-            # read the timestamps of all .pt files like: fsp_world_77994441286000.pt fsp_world_77994541304000.pt fsp_world_77994641282000.pt
-            fsp_times = []
-            fsp_paths = []
-            for fname in os.listdir(fsp_path):
-                if fname.endswith(".pt"):
-                    fsp_times.append(int(fname.split("_")[2].replace(".pt", "")))
-                    fsp_paths.append(os.path.join(fsp_path, fname))
-            self.fsp_times = np.array(fsp_times)
-            self.fsp_paths = fsp_paths
-            # sort fsp_times and fsp_paths
-            sorted_idx = np.argsort(fsp_times)
-            self.fsp_times = self.fsp_times[sorted_idx]
-            self.fsp_paths = [self.fsp_paths[idx] for idx in sorted_idx]
-
-        if self.causal_sd:
-            print("==> loading causal semidense points")
-            causal_sd_path = os.path.join(remote_root, "causal_semidense.jsonl")
-            local_causal_sd = os.path.join(self.local_root, "causal_semidense.jsonl")
-            if os.path.exists(local_causal_sd):
-                causal_sd_path = local_causal_sd
-            self.causal_sd_times, self.causal_sd_time_to_p3 = load_causal_semidense(causal_sd_path)
-
         if self.with_obb:
             print("==> loading 3DBB")
 
-            paths = ["2d_bounding_box.csv", "3d_bounding_box.csv", "instances.json", "scene_objects.csv"]
             timed_obbs, sem_name_to_id = load_obbs_adt(
                 self.local_root, return_sem2id=True, use_description=self.use_description,
-                force_reload=self.force_reload or self.force_reload_object,
+                force_reload=self.force_reload,
                 view_filter=self.camera,
                 visibility_thresh=self.obb_vis_thresh,
             )
 
-            # Structure class names to filter out
-            structure_names = ["floor", "wall", "shelter"]
-
             obb_ts, obbs = [], []
             for key, val in sorted(timed_obbs.items()):
-                # Filter out structure instances by name if remove_structure is True
                 if remove_structure and len(val) > 0:
-                    # Get text labels for each OBB and filter by name
-                    text_labels = val.text_string()
-                    keep_mask = torch.tensor([
-                        text.lower() not in structure_names
-                        for text in text_labels
-                    ], dtype=torch.bool)
-                    val = val[keep_mask]
+                    val = self.filter_obbs_by_name(val)
                 obb_ts.append(key)
                 obbs.append(val)
             if remove_structure:
-                print(f"==> filtering out structure classes by name: {structure_names}")
+                from loaders.base_loader import STRUCTURE_CLASSES
+                print(f"==> filtering out structure classes by name: {sorted(STRUCTURE_CLASSES)}")
 
             # Filter OBBs by obb_min_size (minimum 2D bounding box dimension ratio)
             if self.obb_min_size > 0:
@@ -517,7 +469,6 @@ class AriaLoader(BaseLoader):
         # sdp: Use self.sdp_times_combined min/max
         if (
             self.with_sdp
-            and not self.causal_sd
             and hasattr(self, "sdp_times_combined")
             and len(self.sdp_times_combined) > 0
         ):
@@ -528,18 +479,6 @@ class AriaLoader(BaseLoader):
         # obb: Use self.obb_ts min/max
         if self.with_obb and hasattr(self, "obb_ts") and len(self.obb_ts) > 0:
             ranges.append((self.obb_ts.min(), self.obb_ts.max()))
-
-        # fsp: Use self.fsp_times min/max
-        if self.with_fsp and hasattr(self, "fsp_times") and len(self.fsp_times) > 0:
-            ranges.append((self.fsp_times.min(), self.fsp_times.max()))
-
-        # causal_sd: Use self.causal_sd_times min/max
-        if (
-            self.causal_sd
-            and hasattr(self, "causal_sd_times")
-            and len(self.causal_sd_times) > 0
-        ):
-            ranges.append((self.causal_sd_times.min(), self.causal_sd_times.max()))
 
         if not ranges:
             return None
@@ -584,7 +523,6 @@ class AriaLoader(BaseLoader):
         # sdp: Use self.sdp_times_combined min/max
         if (
             self.with_sdp
-            and not self.causal_sd
             and hasattr(self, "sdp_times_combined")
             and len(self.sdp_times_combined) > 0
         ):
@@ -597,10 +535,6 @@ class AriaLoader(BaseLoader):
         # obb: Use self.obb_ts min/max
         if self.with_obb and hasattr(self, "obb_ts") and len(self.obb_ts) > 0:
             modalities["obb"] = (self.obb_ts.min(), self.obb_ts.max(), len(self.obb_ts))
-
-        # fsp: Use self.fsp_times min/max
-        if self.with_fsp and hasattr(self, "fsp_times") and len(self.fsp_times) > 0:
-            modalities["fsp"] = (self.fsp_times.min(), self.fsp_times.max(), len(self.fsp_times))
 
         if not modalities:
             return
@@ -870,7 +804,7 @@ class AriaLoader(BaseLoader):
                 T_world_rig = self.traj[nearest_idx]
                 output[f"T_world_rig{ni}"] = T_world_rig.float()
 
-        if self.with_sdp and not self.causal_sd:
+        if self.with_sdp:
             # Use pre-computed timestamp arrays and combined dict
             if self.camera == "slaml":
                 time_to_uids = self.time_to_uids_slaml
@@ -894,34 +828,6 @@ class AriaLoader(BaseLoader):
             indices = [self.uid_to_idx[uid] for uid in uids]
             p3d = torch.from_numpy(self.p3_array[indices, :3])
             output["sdp_w"] = p3d
-
-        if self.with_fsp:
-            ts_ns = output[f"time_ns{ni}"]
-            nearest_idx = find_nearest2(self.fsp_times, ts_ns)
-            delta_s = abs(self.fsp_times[nearest_idx] - ts_ns) / 1e9
-            if delta_s > 0.02:
-                print(
-                    f"==> Warning: large time diff between image and fsp: {delta_s:.3f} sec"
-                )
-                return False
-            fsp_path = self.fsp_paths[nearest_idx]
-            fsp = torch.load(fsp_path)
-            # subsample to 1/10
-            fsp = fsp[::10]
-            output["sdp_w"] = fsp
-
-        if self.causal_sd:
-            nearest_csd_idx = find_nearest2(self.causal_sd_times, ts_ns)
-            csd_ns = self.causal_sd_times[nearest_csd_idx]
-            delta_s = abs(csd_ns - ts_ns) / 1e9
-            if delta_s > 0.02:
-                print(
-                    f"==> Warning: large time diff between image and causal_sd: {delta_s:.3f} sec"
-                )
-                return False
-            output["sdp_w"] = torch.from_numpy(
-                self.causal_sd_time_to_p3[csd_ns]
-            ).float()
 
         if self.with_obb:
             ts_ns = output[f"time_ns{ni}"]

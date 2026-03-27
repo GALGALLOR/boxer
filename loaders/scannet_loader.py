@@ -17,10 +17,9 @@ from typing import Optional
 import cv2
 import numpy as np
 import torch
-from tw.camera import CameraTW
-from tw.obb import ObbTW
+from utils.tw.obb import ObbTW
 from loaders.omni_loader import corners_to_obb
-from tw.pose import PoseTW
+from utils.tw.pose import PoseTW
 
 # ShapeNet category ID to human-readable name
 SHAPENET_CAT_MAP = {
@@ -189,6 +188,8 @@ class ScanNetLoader(BaseLoader):
             f"{len(self.scan_corners)} 3D boxes"
         )
 
+        self._init_prefetch()
+
     def _load_annotations(self, annotation_path: str):
         """Load Scan2CAD annotations and precompute scan-space box corners.
 
@@ -283,18 +284,8 @@ class ScanNetLoader(BaseLoader):
             self.box_cat_ids.append(sem_id)
             self.box_cat_names.append(cat_name)
 
-    def __len__(self):
-        return self.length
-
-    def __iter__(self):
-        self.index = 0
-        return self
-
-    def __next__(self):
-        if self.index >= self.length:
-            raise StopIteration
-
-        frame_id = self.frame_ids[self.index]
+    def load(self, idx):
+        frame_id = self.frame_ids[idx]
         datum = {}
         _debug = os.environ.get("DEBUG_VIZ", "0") == "1"
 
@@ -307,8 +298,8 @@ class ScanNetLoader(BaseLoader):
             color_path = os.path.join(
                 self.scene_dir, "frames", "color", f"{frame_id}.jpg"
             )
-        img_bgr = cv2.imread(color_path)
-        img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
+        img_rgb = cv2.imread(color_path)
+        img_rgb = cv2.cvtColor(img_rgb, cv2.COLOR_BGR2RGB)
         HH, WW = img_rgb.shape[:2]
 
         # Resize if requested (e.g. by BoxerNetWrapper)
@@ -329,18 +320,11 @@ class ScanNetLoader(BaseLoader):
             img_rgb = cv2.resize(
                 img_rgb, (resizeW, resizeH), interpolation=cv2.INTER_LINEAR
             )
-            img_bgr = cv2.resize(
-                img_bgr, (resizeW, resizeH), interpolation=cv2.INTER_LINEAR
-            )
 
         if _debug:
             _t1 = time.perf_counter()
 
-        # Convert to torch [1, 3, H, W] normalized to [0, 1]
-        img_torch = torch.from_numpy(img_rgb).permute(2, 0, 1).float() / 255.0
-        datum["img0"] = img_torch[None]
-        # Keep BGR uint8 for viz (avoids torch2cv2 round-trip)
-        datum["img_bgr0"] = img_bgr
+        datum["img0"] = self.img_to_tensor(img_rgb)
 
         if _debug:
             _t2 = time.perf_counter()
@@ -366,19 +350,12 @@ class ScanNetLoader(BaseLoader):
         if _debug:
             _t3 = time.perf_counter()
 
-        # Build pinhole camera
-        T_cam_rig = torch.tensor(
-            [1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0], dtype=torch.float32
+        # Build pinhole camera (valid_radius = image size for ScanNet)
+        cam = self.pinhole_from_K(
+            resizeW, resizeH, fx, fy, cx, cy,
+            valid_radius=(resizeW, resizeH),
         )
-        cam_data = torch.tensor(
-            # Make valid_radius 2x larger for ScanNet to be less restrictive.
-            [resizeW, resizeH, fx, fy, cx, cy, -1, 1e-3, resizeW, resizeH],
-            dtype=torch.float32,
-        )
-        cam_data = torch.cat([cam_data, T_cam_rig])
-        cam = CameraTW(cam_data)
         datum["cam0"] = cam.float()
-        datum["depth_cam0"] = cam.float()
 
         # Load camera pose (4x4 camera-to-world) and recenter
         pose_path = os.path.join(self.scene_dir, "frames", "pose", f"{frame_id}.txt")
@@ -420,51 +397,12 @@ class ScanNetLoader(BaseLoader):
         if _debug:
             _t4 = time.perf_counter()
 
-        # Semi-dense points from depth (uniform subsampling)
-        # Fast numpy-only pinhole unprojection. CameraTW.unproject() adds ~14ms
-        # of overhead per frame (tensor alloc, model dispatch, in_image/in_radius
-        # checks) that dominates for 10k points. Direct math: 0.7ms.
-        num_samples = 10000
-        if depth_np is not None:
-            # Subsample the depth image on a grid, then filter valid
-            dh, dw = depth_np.shape
-            step = max(1, int(np.sqrt(dh * dw / (num_samples * 2))))
-            ys_grid, xs_grid = np.mgrid[0:dh:step, 0:dw:step]
-            ys_flat = ys_grid.ravel()
-            xs_flat = xs_grid.ravel()
-            zz = depth_np[ys_flat, xs_flat]
-            valid_mask = zz > 0
-            ys_v = ys_flat[valid_mask]
-            xs_v = xs_flat[valid_mask]
-            zz_v = zz[valid_mask]
-
-            if len(ys_v) > num_samples:
-                idx = np.random.choice(len(ys_v), size=num_samples, replace=False)
-                ys_v, xs_v, zz_v = ys_v[idx], xs_v[idx], zz_v[idx]
-
-            if len(ys_v) > 0:
-                # Pinhole unproject: ray = [(x-cx)/fx, (y-cy)/fy, 1] * depth
-                x3d = (xs_v.astype(np.float32) - cx) / fx * zz_v
-                y3d = (ys_v.astype(np.float32) - cy) / fy * zz_v
-                sdp_c = np.stack([x3d, y3d, zz_v], axis=-1)
-
-                # Transform to world space: sdp_w = R @ sdp_c + t
-                R = T_world_cam[:3, :3]
-                t = T_world_cam[:3, 3]
-                sdp_w_np = (sdp_c @ R.T) + t
-
-                sdp_w = torch.from_numpy(sdp_w_np)
-                if sdp_w.shape[0] < num_samples:
-                    num_pad = num_samples - sdp_w.shape[0]
-                    pad_vals = torch.full(
-                        (num_pad, 3), float("nan"), dtype=torch.float32
-                    )
-                    sdp_w = torch.cat([sdp_w, pad_vals], dim=0)
-                datum["sdp_w"] = sdp_w.float()
-            else:
-                datum["sdp_w"] = torch.zeros(0, 3, dtype=torch.float32)
-        else:
-            datum["sdp_w"] = torch.zeros(0, 3, dtype=torch.float32)
+        # Semi-dense points from depth (uniform grid subsampling)
+        datum["sdp_w"] = self.sdp_from_depth(
+            depth_np, fx, fy, cx, cy,
+            T_world_cam[:3, :3].astype(np.float32),
+            T_world_cam[:3, 3].astype(np.float32),
+        )
 
         if _debug:
             _t5 = time.perf_counter()
@@ -480,5 +418,4 @@ class ScanNetLoader(BaseLoader):
             _t6 = time.perf_counter()
             print(f"    [loader] imread: {(_t1-_t0)*1000:.1f}ms  to_torch: {(_t2-_t1)*1000:.1f}ms  depth: {(_t3-_t2)*1000:.1f}ms  cam+pose: {(_t4-_t3)*1000:.1f}ms  sdp: {(_t5-_t4)*1000:.1f}ms  total: {(_t6-_t0)*1000:.1f}ms", flush=True)
 
-        self.index += 1
         return datum

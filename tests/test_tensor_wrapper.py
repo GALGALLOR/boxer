@@ -7,7 +7,7 @@ import unittest
 
 import numpy as np
 import torch
-from tw.tensor_wrapper import (
+from utils.tw.tensor_wrapper import (
     autocast,
     autoinit,
     smart_cat,

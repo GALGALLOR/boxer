@@ -1,7 +1,9 @@
 # Overview
 Boxer lifts 2D object detections into static, global, fused 3D oriented bounding boxes (OBBs) from posed images and semi-dense point clouds, focused on indoor object detection.
 
-This repo contains the code and pre-trained model needed to run Boxer on a variety of input data sources (inference only code). 
+This repo contains the code and pre-trained model needed to run Boxer on a variety of input data sources (inference only code).
+
+![Boxer System Architecture](assets/boxer_system.jpg)
 
 We provide examples for running on a variety of data sources:
 * Project Aria (Gen 1)
@@ -55,14 +57,17 @@ mkdir -p ckpts
 
 ### Sample Data
 
-Download a sample ScanNet scene for testing:
+The repo includes sample sequences in `sample_data/` for Aria (`sor01`, `hohen`), CA-1M, and ScanNet. Helper scripts are provided to set up additional data:
 
 ```bash
-# Downloads scene0084_02 to sample_data/ using the official scannet_frames_25k subset
+# ScanNet: download a sample scene using the official scannet_frames_25k subset
 python scripts/download_scannet_sample.py
 
-# Download a different scene
-python scripts/download_scannet_sample.py --scene scene0339_00
+# Omni3D SUN-RGBD: extract 20 sample images from your local SUNRGBD data
+python scripts/download_omni3d_sample.py
+
+# CA-1M: extract a sample sequence from your local CA-1M data
+python scripts/download_ca1m_sample.py
 ```
 
 Note: ScanNet data is subject to the [ScanNet Terms of Use](http://kaldir.vc.in.tum.de/scannet/ScanNet_TOS.pdf).
@@ -78,8 +83,8 @@ The pipeline supports optional **online 3D tracking** (`--track`) for temporal c
 # Basic: run on a sample Aria sequence (place data in sample_data/)
 python run_boxer.py --input sor01
 
-# Add visualization with opencv which works without a display
-python run_boxer.py --input sor01 --viz_headless
+# Disable visualization (faster, just writes CSV)
+python run_boxer.py --input sor01 --no_viz
 
 # Custom text prompts
 python run_boxer.py --input sor01 --labels=chair,table,lamp
@@ -102,8 +107,8 @@ python run_boxer.py --input SUNRGBD
 # Adjust thresholds
 python run_boxer.py --input /path/to/sequence --thresh2d 0.3 --thresh3d 0.6
 
-# Skip visualization (faster, just writes CSV)
-python run_boxer.py --input /path/to/sequence --skip_viz
+# Aria sequence from sample_data/
+python run_boxer.py --input hohen
 
 # Use bfloat16 for faster inference on supported GPUs
 python run_boxer.py --input /path/to/sequence --precision bfloat16
@@ -111,7 +116,7 @@ python run_boxer.py --input /path/to/sequence --precision bfloat16
 
 ### Outputs
 
-Results are written to `~/viz_boxer/<sequence_name>/`:
+Results are written to `output/<sequence_name>/`:
 - `boxer_3dbbs.csv` — per-frame 3D bounding boxes
 - `owl_2dbbs.csv` — per-frame 2D detections
 - `boxer_3dbbs_tracked.csv` — tracked 3D boxes (with `--track`)
@@ -128,13 +133,13 @@ Results are written to `~/viz_boxer/<sequence_name>/`:
 | `--thresh3d` | `0.5` | 3D box confidence threshold |
 | `--track` | off | Enable online 3D box tracking |
 | `--fuse` | off | Run post-hoc 3D box fusion |
-| `--skip_viz` | off | Skip visualization, only write CSVs |
+| `--no_viz` | off | Disable visualization (on by default) |
 | `--precision` | `float32` | Inference precision (`float32` or `bfloat16`) |
 | `--camera` | `rgb` | Aria camera stream (`rgb`, `slaml`, `slamr`) |
 | `--pinhole` | off | Rectify fisheye to pinhole |
 | `--detector_hw` | `960` | Resize for 2D detector |
 | `--ckpt` | see code | Path to BoxerNet checkpoint |
-| `--output_dir` | `~/viz_boxer` | Output directory |
+| `--output_dir` | `output/` | Output directory |
 | `--gt2d` | off | Use ground-truth 2D boxes as input |
 | `--no_sdp` | off | Disable semi-dense point input |
 | `--force_cpu` | off | Force CPU inference |
@@ -146,8 +151,6 @@ boxer/
 ├── run_boxer.py              # Main entry point
 ├── boxernet/
 │   ├── boxernet.py           # BoxerNet model (encode → cross-attend → predict)
-│   ├── alehead.py            # AleHead: 7-DoF OBB + uncertainty prediction head
-│   ├── attention_utils.py    # Transformer blocks (self/cross-attention)
 │   └── dinov3_wrapper.py     # DINOv3 backbone wrapper
 ├── owl/
 │   ├── owl_wrapper.py        # OWLv2 open-vocabulary detector (JIT-traced, no transformers needed)
@@ -158,6 +161,10 @@ boxer/
 │   ├── ca_loader.py          # CA-1M dataset loader
 │   ├── omni_loader.py        # Omni3D dataset loader
 │   └── scannet_loader.py     # ScanNet dataset loader
+├── scripts/
+│   ├── download_scannet_sample.py   # Download ScanNet sample data
+│   ├── download_omni3d_sample.py    # Extract Omni3D SUN-RGBD sample
+│   └── download_ca1m_sample.py      # Extract CA-1M sample data
 ├── tests/                    # Unit tests (see tests/README.md)
 ├── tw/                       # TensorWrapper types (see tw/README.md)
 │   ├── tensor_wrapper.py     # TensorWrapper base class
@@ -170,7 +177,7 @@ boxer/
     ├── track_3d_boxes.py     # Online 3D bounding box tracker
     ├── file_io.py            # CSV I/O for OBBs and calibration
     ├── image.py              # Image utilities + 3D/2D box rendering
-    ├── viz_boxer.py          # Interactive 3D visualization
+    ├── viewer.py             # Interactive 3D visualization
     ├── orbit_viewer.py       # Orbit-based 3D viewer
     ├── gravity.py            # Gravity alignment utilities
     ├── taxonomy.py           # Label taxonomy definitions

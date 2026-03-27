@@ -5,10 +5,10 @@ import cv2
 import numpy as np
 import torch
 
-from tw.camera import CameraTW
-from tw.obb import ObbTW
-from tw.pose import PoseTW
-from tw.tensor_utils import tensor2string, unpad_string
+from utils.tw.camera import CameraTW
+from utils.tw.obb import ObbTW
+from utils.tw.pose import PoseTW
+from utils.tw.tensor_utils import tensor2string, unpad_string
 
 # Some globals for opencv drawing functions.
 BLU = (255, 0, 0)

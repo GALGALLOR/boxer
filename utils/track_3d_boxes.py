@@ -27,16 +27,16 @@ from enum import Enum
 from typing import List, Optional
 
 import torch
-from tw.camera import CameraTW
+from utils.tw.camera import CameraTW
 from utils.file_io import ObbCsvWriter2, read_obb_csv
 from utils.fuse_3d_boxes import (
     align_boxes_r90,
     angular_distance,
     weighted_yaw_mean,
 )
-from tw.obb import ObbTW, iou_mc7
-from tw.pose import PoseTW, rotation_from_euler
-from tw.tensor_utils import (
+from utils.tw.obb import ObbTW, iou_mc7
+from utils.tw.pose import PoseTW, rotation_from_euler
+from utils.tw.tensor_utils import (
     pad_string,
     string2tensor,
     tensor2string,

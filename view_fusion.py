@@ -47,7 +47,7 @@ def main():
     print(f"==> Loaded {len(timed_obbs)} frames, {total_dets} detections")
 
     # Stack all OBBs
-    from tw.obb import ObbTW
+    from utils.tw.obb import ObbTW
 
     all_obbs_list = []
     for ts in sorted(timed_obbs.keys()):

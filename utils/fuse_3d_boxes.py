@@ -24,9 +24,9 @@ from typing import List, Optional
 import numpy as np
 import torch
 from utils.file_io import ObbCsvWriter2, read_obb_csv
-from tw.obb import ObbTW, iou_mc7, iou_mc7_sparse
-from tw.pose import PoseTW, rotation_from_euler
-from tw.tensor_utils import (
+from utils.tw.obb import ObbTW, iou_mc7, iou_mc7_sparse
+from utils.tw.pose import PoseTW, rotation_from_euler
+from utils.tw.tensor_utils import (
     pad_string,
     string2tensor,
     tensor2string,

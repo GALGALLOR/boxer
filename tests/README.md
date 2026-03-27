@@ -45,3 +45,5 @@ After running `tests/run_tests.sh`, the HTML coverage report is at `tests/htmlco
 | `test_tensor_utils.py` | String/tensor conversions, find_nearest, pad_points |
 | `test_tensor_wrapper.py` | TensorWrapper base class operations |
 | `test_track_3d_boxes.py` | 3D box tracker: track creation, promotion, aging, confidence filtering |
+| `test_boxernet.py` | BoxerNet model forward pass and integration |
+| `test_owl.py` | OWLv2 detector wrapper and CLIP tokenizer |

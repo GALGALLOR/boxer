@@ -26,7 +26,7 @@ from pyrr import Matrix44
 from loaders.aria_loader import AriaLoader
 from loaders.ca_loader import CALoader
 from loaders.scannet_loader import ScanNetLoader
-from tw.camera import CameraTW
+from utils.tw.camera import CameraTW
 from utils.file_io import (
     dump_obbs_adt,
     load_bb2d_csv,
@@ -34,11 +34,11 @@ from utils.file_io import (
     probe_gravity_direction,
     read_obb_csv,
 )
-from tw.obb import BB3D_LINE_ORDERS, ObbTW
+from utils.tw.obb import BB3D_LINE_ORDERS, ObbTW
 from utils.orbit_viewer import OrbitViewer
-from tw.pose import PoseTW
+from utils.tw.pose import PoseTW
 from utils.taxonomy import BOXY_SEM2NAME, SSI_COLORS_ALT, TEXT2COLORS
-from tw.tensor_utils import find_nearest2, tensor2string, unpad_string
+from utils.tw.tensor_utils import find_nearest2, tensor2string, unpad_string
 from utils.track_3d_boxes import BoundingBox3DTracker
 from utils.video import make_mp4
 from utils.demo_utils import DEFAULT_SEQ, EVAL_PATH, SAMPLE_DATA_PATH
@@ -94,7 +94,6 @@ def build_seq_ctx(input_path, dataset_type):
             start_frame=0,
             skip_frames=1,
             max_frames=1_000_000,
-            use_canny=False,
         )
         loader.load_all()
         rgb_timestamps = np.array(loader.timestamp_ns)
@@ -427,7 +426,6 @@ def _load_sequence_context_auto(
             start_frame=max(0, int(start_frame)),
             skip_frames=1,
             max_frames=ca_max_frames,
-            use_canny=False,
             num_samples=1000,
             remove_structure=False,
             remove_large=False,

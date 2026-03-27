@@ -10,20 +10,20 @@ from typing import Dict, List, Optional, Union
 
 import numpy as np
 import torch
-from tw.camera import CameraTW
-from tw.obb import ObbTW
-from tw.pose import PoseTW
+from utils.tw.camera import CameraTW
+from utils.tw.obb import ObbTW
+from utils.tw.pose import PoseTW
 from utils.taxonomy import (
     SSI_COLORS,
     SSI_NAME2SEM,
     SSI_SEM2NAME,
 )
-from tw.tensor_utils import (
+from utils.tw.tensor_utils import (
     find_nearest,
     pad_string,
     string2tensor,
 )
-from tw.pose import quat_to_rotmat, rotmat_to_quat
+from utils.tw.pose import quat_to_rotmat, rotmat_to_quat
 from tqdm import tqdm
 
 # pyre-unsafe

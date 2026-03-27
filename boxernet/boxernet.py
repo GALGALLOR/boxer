@@ -7,9 +7,9 @@ import numpy as np
 import torch
 from torch import nn
 
-from tw.camera import CameraTW
-from tw.obb import ObbTW
-from tw.pose import PoseTW, rotation_from_euler
+from utils.tw.camera import CameraTW
+from utils.tw.obb import ObbTW
+from utils.tw.pose import PoseTW, rotation_from_euler
 from boxernet.dinov3_wrapper import (
     batch_dino,
     DINOV3_OUTPUT_DIM,
@@ -594,7 +594,7 @@ class BoxerNet(nn.Module):
         ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=True)
         cfg = ckpt["cfg"]
         hw = cfg["dataset"]["image_hw"]
-        print(f"==> hw={hw} from checkpoint config")
+
 
         model = cls(cfg["model"])
         model_dict = model.state_dict()

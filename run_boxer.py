@@ -23,7 +23,7 @@ from utils.demo_utils import (
 from utils.file_io import ObbCsvWriter2, read_obb_csv, load_bb2d_csv, save_bb2d_csv
 from utils.image import put_text, torch2cv2, draw_bb3s, render_bb2, render_depth_patches
 from utils.taxonomy import load_text_labels
-from tw.tensor_utils import (
+from utils.tw.tensor_utils import (
     pad_string,
     string2tensor,
     tensor2string,
@@ -101,7 +101,7 @@ def main():
     parser.add_argument("--track", action="store_true", help="run online 3D box tracking and show tracked boxes in Top Down View")
     parser.add_argument("--ckpt", type=str, default=os.path.join(CKPT_PATH, "bxr_alln2nw12bs12hw960in2x6d768ni1_Nov20.ckpt"), help="path to BoxerNet checkpoint")
     parser.add_argument("--precision", type=str, default="float32", choices=["float32", "bfloat16"], help="Inference precision (default: float32)")
-    parser.add_argument("--output_dir", type=str, default=EVAL_PATH, help="Output directory for results (default: ~/viz_boxer)")
+    parser.add_argument("--output_dir", type=str, default=EVAL_PATH, help="Output directory for results (default: output/)")
     args = parser.parse_args()
 
     if args.fuse and args.track:
@@ -210,7 +210,6 @@ def main():
             skip_frames=args.skip_n,
             max_frames=args.max_n,
             resize=(args.detector_hw, args.detector_hw),
-            use_canny=False,
         )
     else:
         print(f"==> Sequence name: '{seq_name}'")

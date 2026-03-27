@@ -3,7 +3,7 @@
 import numpy as np
 import pytest
 import torch
-from tw.tensor_utils import (
+from utils.tw.tensor_utils import (
     find_nearest,
     find_nearest2,
     pad_points,

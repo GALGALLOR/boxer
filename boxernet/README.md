@@ -35,7 +35,5 @@ Given a single RGB frame with camera intrinsics, an egomotion pose, and sparse d
 
 | File | Description |
 |------|-------------|
-| `boxernet.py` | BoxerNet model (encode → cross-attend → predict) |
-| `alehead.py` | AleHead: 7-DoF OBB + uncertainty prediction head |
-| `attention_utils.py` | Transformer blocks (self/cross-attention) |
+| `boxernet.py` | BoxerNet model (encode → cross-attend → predict), including AleHead and attention blocks |
 | `dinov3_wrapper.py` | DINOv3 backbone wrapper |

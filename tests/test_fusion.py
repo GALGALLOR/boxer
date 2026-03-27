@@ -7,8 +7,8 @@ import numpy as np
 import pytest
 import torch
 
-from tw.obb import make_obb, ObbTW
-from tw.pose import PoseTW, rotation_from_euler
+from utils.tw.obb import make_obb, ObbTW
+from utils.tw.pose import PoseTW, rotation_from_euler
 from utils.fuse_3d_boxes import (
     BoundingBox3DFuser,
     FusedInstance,
@@ -16,7 +16,7 @@ from utils.fuse_3d_boxes import (
     angular_distance,
     align_boxes_r90,
 )
-from tw.tensor_utils import pad_string, string2tensor
+from utils.tw.tensor_utils import pad_string, string2tensor
 
 try:
     from scipy.optimize import linear_sum_assignment as scipy_linear_sum_assignment

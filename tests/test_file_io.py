@@ -6,10 +6,10 @@ import unittest
 
 import numpy as np
 import torch
-from tw.obb import make_obb, ObbTW
-from tw.pose import PoseTW
+from utils.tw.obb import make_obb, ObbTW
+from utils.tw.pose import PoseTW
 from utils.file_io import ObbCsvWriter2, read_obb_csv, save_bb2d_csv, load_bb2d_csv
-from tw.tensor_utils import pad_string, string2tensor, tensor2string, unpad_string
+from utils.tw.tensor_utils import pad_string, string2tensor, tensor2string, unpad_string
 
 
 def _make_test_obb(position, sz=(1.0, 1.0, 1.0), yaw=0.0, prob=0.9,
