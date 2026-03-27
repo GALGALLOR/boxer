@@ -7,7 +7,7 @@ a subset of images from your local SUN-RGBD data into sample_data/.
 
 Prerequisites:
     Download SUNRGBD V1 from https://rgbd.cs.princeton.edu/ and extract it
-    so that images are at ~/data/Omni3D/SUNRGBD/kv2/.../image/*.jpg
+    so that images are at sample_data/Omni3D/SUNRGBD/kv2/.../image/*.jpg
 
 Usage:
     # Create 20-image sample from default location
@@ -29,7 +29,7 @@ import zipfile
 OMNI3D_JSON_URL = "https://dl.fbaipublicfiles.com/omni3d_data/Omni3D_json.zip"
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DEFAULT_OUTPUT_DIR = os.path.join(REPO_ROOT, "sample_data", "Omni3D")
-DEFAULT_DATA_ROOT = os.path.expanduser("~/data/Omni3D")
+DEFAULT_DATA_ROOT = os.path.join(REPO_ROOT, "sample_data", "Omni3D")
 
 
 def download_file(url: str, dest: str) -> None:

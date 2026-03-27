@@ -178,7 +178,7 @@ def main():
     if dataset_type == "scannet":
         loader = ScanNetLoader(
             scene_dir=args.input,
-            annotation_path=os.path.expanduser("~/data/scannet/full_annotations.json"),
+            annotation_path=os.path.join(SAMPLE_DATA_PATH, "scannet", "full_annotations.json"),
             skip_frames=args.skip_n,
             max_frames=args.max_n,
             start_frame=args.start_n,
@@ -272,6 +272,9 @@ def main():
 
     boxernet = BoxerNet.load_from_checkpoint(args.ckpt, device=device)
     loader.resize = boxernet.hw
+    # Re-trigger prefetch so the first frame uses the correct resize.
+    loader.index = 0
+    loader._init_prefetch()
     print(f"==> Will resize images to {loader.resize}x{loader.resize} for boxernet")
     _dbg("boxernet")
 

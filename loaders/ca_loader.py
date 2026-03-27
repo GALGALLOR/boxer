@@ -86,7 +86,7 @@ class CALoader(BaseLoader):
         if os.path.exists(sample):
             out_dir = sample
         else:
-            out_dir = os.path.expanduser(f"~/data/ca1m/{seq_name}")
+            out_dir = os.path.join(SAMPLE_DATA_PATH, seq_name)
         world_files = glob.glob(
             os.path.join(out_dir, "**/world.gt/instances.json"), recursive=True
         )

@@ -26,6 +26,7 @@ from pyrr import Matrix44
 from loaders.aria_loader import AriaLoader
 from loaders.ca_loader import CALoader
 from loaders.scannet_loader import ScanNetLoader
+from utils.demo_utils import SAMPLE_DATA_PATH
 from utils.tw.camera import CameraTW
 from utils.file_io import (
     dump_obbs_adt,
@@ -42,7 +43,7 @@ from utils.tw.tensor_utils import find_nearest2, tensor2string, unpad_string
 from utils.track_3d_boxes import BoundingBox3DTracker
 from utils.video import make_mp4
 from utils.demo_utils import DEFAULT_SEQ, EVAL_PATH, SAMPLE_DATA_PATH
-from loaders.omni_loader import OMNI3D_DATASETS
+from loaders.omni_loader import OMNI3D_DATASETS, OmniLoader
 
 
 # ---------------------------------------------------------------------------
@@ -119,7 +120,7 @@ def build_seq_ctx(input_path, dataset_type):
     elif dataset_type == "scannet":
         loader = ScanNetLoader(
             scene_dir=input_path,
-            annotation_path=os.path.expanduser("~/data/scannet/full_annotations.json"),
+            annotation_path=os.path.join(SAMPLE_DATA_PATH, "scannet", "full_annotations.json"),
             skip_frames=1,
             max_frames=None,
         )
@@ -155,6 +156,77 @@ def build_seq_ctx(input_path, dataset_type):
             T_wr_data = torch.tensor([*R_flat, *t_vec], dtype=torch.float32)
             traj.append(PoseTW(T_wr_data).float())
             calibs.append(cam_template.clone())
+        # Accumulate global SDP from depth maps (cached)
+        import pickle
+
+        cache_path = os.path.join(loader.scene_dir, "cache_sdp_global_v2.pkl")
+        uid_to_p3 = None
+        sdp_global = None
+        if os.path.exists(cache_path):
+            _startup_log("Loading cached ScanNet SDP...")
+            with open(cache_path, "rb") as f:
+                sdp_data = pickle.load(f)
+            uid_to_p3 = sdp_data["uid_to_p3"]
+            sdp_global = sdp_data["sdp_global"]
+            _startup_log(f"Loaded {len(sdp_global)} cached SDP points")
+        else:
+            _startup_log("Building ScanNet global SDP from depth maps...")
+            # Load depth intrinsics (depth resolution differs from color)
+            depth_K_path = os.path.join(
+                loader.scene_dir, "frames", "intrinsic", "intrinsic_depth.txt"
+            )
+            depth_K = np.loadtxt(depth_K_path)
+            depth_fx, depth_fy = depth_K[0, 0], depth_K[1, 1]
+            depth_cx, depth_cy = depth_K[0, 2], depth_K[1, 2]
+
+            all_pts = []
+            frame_step = max(1, len(frame_ids) // 50)
+            for i in range(0, len(frame_ids), frame_step):
+                fid = frame_ids[i]
+                depth_path = os.path.join(
+                    loader.scene_dir, "frames", "depth", f"{fid}.png"
+                )
+                depth_raw = cv2.imread(depth_path, cv2.IMREAD_UNCHANGED)
+                if depth_raw is None:
+                    continue
+                depth_np = depth_raw.astype(np.float32) / 1000.0
+                pose_path = os.path.join(
+                    loader.scene_dir, "frames", "pose", f"{fid}.txt"
+                )
+                T_wc = np.loadtxt(pose_path).astype(np.float64)
+                T_wc[:3, 3] -= loader.world_offset
+                T_wc = T_wc.astype(np.float32)
+                pts = ScanNetLoader.sdp_from_depth(
+                    depth_np,
+                    depth_fx,
+                    depth_fy,
+                    depth_cx,
+                    depth_cy,
+                    T_wc[:3, :3],
+                    T_wc[:3, 3],
+                    num_samples=5000,
+                )
+                valid = ~torch.isnan(pts[:, 0])
+                if valid.any():
+                    all_pts.append(pts[valid].numpy())
+            if all_pts:
+                sdp_global = np.concatenate(all_pts, axis=0).astype(np.float32)
+                if len(sdp_global) > 200_000:
+                    idx = np.random.choice(len(sdp_global), 200_000, replace=False)
+                    sdp_global = sdp_global[idx]
+                uid_to_p3 = {i: sdp_global[i] for i in range(len(sdp_global))}
+                try:
+                    with open(cache_path, "wb") as f:
+                        pickle.dump(
+                            {"uid_to_p3": uid_to_p3, "sdp_global": sdp_global}, f
+                        )
+                except OSError:
+                    pass  # skip caching if directory isn't writable
+                _startup_log(
+                    f"Built and cached {len(sdp_global)} SDP points from "
+                    f"{len(all_pts)} frames"
+                )
+
         return {
             "source": "scannet",
             "loader": loader,
@@ -170,7 +242,75 @@ def build_seq_ctx(input_path, dataset_type):
             "calib_ts": rgb_timestamps,
             "time_to_uids_slaml": None,
             "time_to_uids_slamr": None,
+            "uid_to_p3": uid_to_p3,
+            "sdp_global": sdp_global,
+        }
+    elif dataset_type == "omni3d":
+        # Omni3D datasets (SUNRGBD, etc.) — single independent images
+        from loaders.omni_loader import load_sunrgbd_extrinsics
+
+        loader = OmniLoader(
+            dataset_name=input_path,
+            split="val",
+            shuffle=True,
+            seed=42,
+            max_images=500,
+        )
+        # Build poses and calibs from JSON metadata (no image loading)
+        traj = []
+        calibs = []
+        rgb_timestamps = []
+        for img_info in loader.images:
+            K = img_info["K"]
+            W, H = img_info["width"], img_info["height"]
+            fx, fy = K[0][0], K[1][1]
+            cx, cy = K[0][2], K[1][2]
+            cam = loader.pinhole_from_K(W, H, fx, fy, cx, cy)
+            calibs.append(cam.float())
+            rgb_timestamps.append(int(img_info["id"]))
+
+            # Build T_world_rig (same logic as OmniLoader.load)
+            if input_path == "SUNRGBD":
+                R_ext = load_sunrgbd_extrinsics(
+                    loader.data_root, img_info["file_path"]
+                )
+                if R_ext is not None:
+                    R_yz = np.array(
+                        [[1, 0, 0], [0, 0, 1], [0, -1, 0]], dtype=np.float32
+                    )
+                    R_flat = (R_yz @ R_ext).flatten()
+                    T_wr_data = torch.tensor(
+                        [*R_flat, 0, 0, 0], dtype=torch.float32
+                    )
+                else:
+                    T_wr_data = torch.tensor(
+                        [1, 0, 0, 0, 0, 1, 0, -1, 0, 0, 0, 0],
+                        dtype=torch.float32,
+                    )
+            else:
+                T_wr_data = torch.tensor(
+                    [1, 0, 0, 0, 0, 1, 0, -1, 0, 0, 0, 0], dtype=torch.float32
+                )
+            traj.append(PoseTW(T_wr_data).float())
+
+        rgb_timestamps = np.array(rgb_timestamps, dtype=np.int64)
+        print(f"Loaded {len(traj)} {input_path} images (metadata)")
+
+        return {
+            "source": "omni3d",
+            "loader": loader,
+            "rgb_num_frames": len(traj),
+            "rgb_timestamps": rgb_timestamps,
+            "rgb_images": None,  # loaded on demand via loader
+            "is_nebula": True,  # no Aria rotation
+            "traj": traj,
+            "pose_ts": rgb_timestamps,
+            "calibs": calibs,
+            "calib_ts": rgb_timestamps,
+            "time_to_uids_slaml": None,
+            "time_to_uids_slamr": None,
             "uid_to_p3": None,
+            "sdp_global": None,
         }
     else:
         return None
@@ -246,7 +386,7 @@ def add_common_args(parser):
     parser.add_argument("--init_rgb_text_scale", type=float, default=None, help="Initial RGB label text scale")
     parser.add_argument("--init_image_panel_width", type=float, default=None, help="Initial image panel width fraction")
     parser.add_argument("--scannet_scene", type=str, default=None, help="Path to ScanNet scene directory")
-    parser.add_argument("--scannet_annotation_path", type=str, default="~/data/scannet/full_annotations.json")
+    parser.add_argument("--scannet_annotation_path", type=str, default=os.path.join(SAMPLE_DATA_PATH, "scannet", "full_annotations.json"))
     # fmt: on
 
 
@@ -322,7 +462,7 @@ def _load_sequence_context_auto(
     seq_name: str,
     *,
     scannet_scene: str | None = None,
-    scannet_annotation_path: str = "~/data/scannet/full_annotations.json",
+    scannet_annotation_path: str = os.path.join(SAMPLE_DATA_PATH, "scannet", "full_annotations.json"),
     with_sdp: bool = False,
     start_frame: int = 0,
     max_frames: int = 0,
@@ -2188,7 +2328,7 @@ class SequenceOBBViewer(OBBViewer):
         view_save_path: str = "",
         seq_name: str = "",
         scannet_scene: str | None = None,
-        scannet_annotation_path: str = "~/data/scannet/full_annotations.json",
+        scannet_annotation_path: str = os.path.join(SAMPLE_DATA_PATH, "scannet", "full_annotations.json"),
         seq_ctx: dict | None = None,
         **kwargs: Any,
     ) -> None:
@@ -2319,6 +2459,7 @@ class SequenceOBBViewer(OBBViewer):
                 source_name = {
                     "ca1m": "CALoader",
                     "scannet": "ScanNetLoader",
+                    "omni3d": "OmniLoader",
                 }.get(self._data_source, "AriaLoader")
                 print("Data source: " + source_name)
                 self._loader = seq_ctx_data.get("loader", None)
@@ -2475,6 +2616,13 @@ class SequenceOBBViewer(OBBViewer):
                 self._rgb_lru_cache[frame_id] = img
                 if len(self._rgb_lru_cache) > self._rgb_lru_max_items:
                     self._rgb_lru_cache.popitem(last=False)
+        elif getattr(self, "_data_source", None) == "omni3d" and self._loader is not None:
+            datum = self._loader.load(idx)
+            img_t = datum["img0"][0].permute(1, 2, 0).cpu().numpy()
+            img = np.clip(img_t * 255.0, 0, 255).astype(np.uint8)
+            self._rgb_lru_cache[ts_key] = img
+            if len(self._rgb_lru_cache) > self._rgb_lru_max_items:
+                self._rgb_lru_cache.popitem(last=False)
         elif getattr(self, "_rgb_images", None) is not None:
             img = self._rgb_images[idx]
             if img is None:
@@ -2491,7 +2639,12 @@ class SequenceOBBViewer(OBBViewer):
         if self.calibs is not None and not getattr(
             self, "_logged_calib_vrs_mismatch", False
         ):
-            cam0 = self.calibs[0] if self.calibs.dim() >= 2 else self.calibs
+            if isinstance(self.calibs, list):
+                cam0 = self.calibs[0]
+            elif hasattr(self.calibs, "dim") and self.calibs.dim() >= 2:
+                cam0 = self.calibs[0]
+            else:
+                cam0 = self.calibs
             cam_w = cam0.size[..., 0].item()
             cam_h = cam0.size[..., 1].item()
             if abs(cam_w - self._rgb_vrs_w) > 1 or abs(cam_h - self._rgb_vrs_h) > 1:
@@ -3229,7 +3382,7 @@ class TrackerViewer(SequenceOBBViewer):
         init_image_panel_width: Optional[float] = None,
         verbose: bool = False,
         scannet_scene: str | None = None,
-        scannet_annotation_path: str = "~/data/scannet/full_annotations.json",
+        scannet_annotation_path: str = os.path.join(SAMPLE_DATA_PATH, "scannet", "full_annotations.json"),
         seq_ctx: dict | None = None,
         freeze_tracker: bool = False,
         **kwargs: Any,

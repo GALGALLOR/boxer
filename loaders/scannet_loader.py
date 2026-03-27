@@ -105,13 +105,11 @@ class ScanNetLoader(BaseLoader):
         max_frames: Optional[int] = None,
         start_frame: int = 1,
     ):
-        # Allow short scene names like "scene0000_00" → sample_data/ or ~/data/scannet/
+        # Allow short scene names like "scene0000_00" → sample_data/
         scene_dir = os.path.expanduser(scene_dir)
         if not os.path.isabs(scene_dir) and not os.path.exists(scene_dir):
             from utils.demo_utils import SAMPLE_DATA_PATH
-            sample = os.path.join(SAMPLE_DATA_PATH, scene_dir)
-            legacy = os.path.expanduser(f"~/data/scannet/{scene_dir}")
-            scene_dir = sample if os.path.exists(sample) else legacy
+            scene_dir = os.path.join(SAMPLE_DATA_PATH, scene_dir)
         self.scene_dir = scene_dir
         self.skip_frames = skip_frames
         self.resize = None  # Will be set by BoxerNetWrapper

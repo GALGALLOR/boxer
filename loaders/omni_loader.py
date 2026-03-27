@@ -26,7 +26,7 @@ def load_sunrgbd_extrinsics(data_root: str, file_path: str) -> Optional[np.ndarr
     """Load SUNRGBD extrinsics (camera-to-world rotation) from the extrinsics folder.
 
     Args:
-        data_root: Root directory of Omni3D data (e.g., ~/data/Omni3D)
+        data_root: Root directory of Omni3D data (e.g., sample_data/Omni3D)
         file_path: Image file path from Omni3D JSON (e.g., SUNRGBD/kv2/.../image/xxx.jpg)
 
     Returns:
@@ -126,14 +126,7 @@ class OmniLoader(BaseLoader):
         remove_no_3d: bool = True,
     ):
         if data_root is None:
-            default = os.path.expanduser("~/data/Omni3D")
-            sample = os.path.join(SAMPLE_DATA_PATH, "Omni3D")
-            if os.path.isdir(default):
-                data_root = default
-            elif os.path.isdir(sample):
-                data_root = sample
-            else:
-                data_root = default
+            data_root = os.path.join(SAMPLE_DATA_PATH, "Omni3D")
 
         self.data_root = data_root
         self.dataset_name = dataset_name

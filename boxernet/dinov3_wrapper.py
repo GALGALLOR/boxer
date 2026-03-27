@@ -1570,8 +1570,11 @@ class DinoV3Wrapper(torch.nn.Module):
 def batch_dino(dino_wrapper, torch_img, rotated):
     B = torch_img.shape[0]
     patch_size = dino_wrapper.patch_size
-    rotated_img = torch.rot90(torch_img.clone(), 1, [-1, -2])
-    torch_img = torch.where(rotated.reshape(B, 1, 1, 1), rotated_img, torch_img)
+    any_rotated = rotated.any().item()
+
+    if any_rotated:
+        rotated_img = torch.rot90(torch_img.clone(), 1, [-1, -2])
+        torch_img = torch.where(rotated.reshape(B, 1, 1, 1), rotated_img, torch_img)
 
     # Pad image to be divisible by patch_size if needed.
     _, _, H, W = torch_img.shape
@@ -1588,6 +1591,7 @@ def batch_dino(dino_wrapper, torch_img, rotated):
         fW = W // patch_size
         feat = feat[:, :, :fH, :fW]
 
-    rotated_feat = torch.rot90(feat, 3, [-1, -2])
-    feat = torch.where(rotated.reshape(B, 1, 1, 1), rotated_feat, feat)
+    if any_rotated:
+        rotated_feat = torch.rot90(feat, 3, [-1, -2])
+        feat = torch.where(rotated.reshape(B, 1, 1, 1), rotated_feat, feat)
     return feat
