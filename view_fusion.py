@@ -40,6 +40,16 @@ def main():
     csv_path = fused_csv if os.path.exists(fused_csv) else raw_csv
 
     print(f"==> Loading OBBs from {csv_path}")
+    if not os.path.exists(csv_path):
+        print(f"\n[ERROR] CSV not found: {csv_path}")
+        print(f"\nRun BoxerNet first to generate it:\n")
+        cmd = f"  python run_boxer.py --input {seq_name} --skip_viz"
+        if args.write_name != "boxer":
+            cmd += f" --write_name {args.write_name}"
+        if args.output_dir != EVAL_PATH:
+            cmd += f" --output_dir {args.output_dir}"
+        print(cmd + "\n")
+        raise SystemExit(1)
     timed_obbs = read_obb_csv(csv_path)
     timed_obbs = subsample_timed_obbs(
         timed_obbs, skip_n=args.skip_n, start_n=args.start_n, max_n=args.max_n

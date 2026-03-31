@@ -84,7 +84,7 @@ The pipeline supports optional **online 3D tracking** (`--track`) for temporal c
 python run_boxer.py --input sor01
 
 # Disable visualization (faster, just writes CSV)
-python run_boxer.py --input sor01 --no_viz
+python run_boxer.py --input sor01 --skip_viz
 
 # Custom text prompts
 python run_boxer.py --input sor01 --labels=chair,table,lamp
@@ -133,7 +133,7 @@ Results are written to `output/<sequence_name>/`:
 | `--thresh3d` | `0.5` | 3D box confidence threshold |
 | `--track` | off | Enable online 3D box tracking |
 | `--fuse` | off | Run post-hoc 3D box fusion |
-| `--no_viz` | off | Disable visualization (on by default) |
+| `--skip_viz` | off | Disable visualization (on by default) |
 | `--precision` | `float32` | Inference precision (`float32` or `bfloat16`) |
 | `--camera` | `rgb` | Aria camera stream (`rgb`, `slaml`, `slamr`) |
 | `--pinhole` | off | Rectify fisheye to pinhole |

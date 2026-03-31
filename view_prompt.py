@@ -432,6 +432,9 @@ def main():
             return img_u, img_v
 
         def on_mouse_press_event(self, x, y, button):
+            self.imgui.mouse_press_event(x, y, button)
+            if imgui.get_io().want_capture_mouse:
+                return
             if button == 1:
                 coords = self._screen_to_image_coords(x, y)
                 if coords is not None:
@@ -444,6 +447,9 @@ def main():
             super().on_mouse_press_event(x, y, button)
 
         def on_mouse_drag_event(self, x, y, dx, dy):
+            self.imgui.mouse_drag_event(x, y, dx, dy)
+            if imgui.get_io().want_capture_mouse:
+                return
             if self._drawing:
                 coords = self._screen_to_image_coords(x, y)
                 if coords is not None:

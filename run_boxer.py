@@ -90,7 +90,7 @@ def main():
     parser.add_argument("--labels", type=comma_separated_list, nargs="?", const=[], default=["lvisplus"], help="Optional comma-separated list of text prompts (e.g. --labels=small or --labels=chair,table,lamp)")
     parser.add_argument("--detector_hw", type=int, default=960, help="resize images before going into 2D detector")
     parser.add_argument("--write_name", default="boxer", type=str, help="name prefix for outputs")
-    parser.add_argument("--no_viz", action="store_true", help="disable headless visualization (on by default)")
+    parser.add_argument("--skip_viz", action="store_true", help="disable headless visualization (on by default)")
     parser.add_argument("--cache2d", action="store_true", help="load 2D BBs from CSV instead of running detector")
     parser.add_argument("--cache3d", action="store_true", help="load 3D BBs from CSV instead of running BoxerNet")
     parser.add_argument("--no_sdp", action="store_true", help="turn off SDP input")
@@ -108,7 +108,7 @@ def main():
         parser.error("--fuse and --track are mutually exclusive")
     if args.cache3d:
         args.cache2d = True
-    args.viz_headless = not args.no_viz
+    args.viz_headless = not args.skip_viz
     print(args)
     # fmt: on
 
