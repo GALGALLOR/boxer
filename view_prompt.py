@@ -433,8 +433,7 @@ def main():
 
         def on_mouse_press_event(self, x, y, button):
             self.imgui.mouse_press_event(x, y, button)
-            if imgui.get_io().want_capture_mouse:
-                return
+            # Check image area first (drawing 2D BBs)
             if button == 1:
                 coords = self._screen_to_image_coords(x, y)
                 if coords is not None:
@@ -444,18 +443,25 @@ def main():
                     self._draw_start_screen = (x, y)
                     self._draw_end_screen = (x, y)
                     return
+            # Let imgui handle interactive widgets (sliders, buttons, text)
+            if imgui.get_io().want_capture_mouse:
+                return
+            # 3D viewport — camera controls
             super().on_mouse_press_event(x, y, button)
 
         def on_mouse_drag_event(self, x, y, dx, dy):
             self.imgui.mouse_drag_event(x, y, dx, dy)
-            if imgui.get_io().want_capture_mouse:
-                return
+            # Image drawing in progress
             if self._drawing:
                 coords = self._screen_to_image_coords(x, y)
                 if coords is not None:
                     self._draw_end = coords
                 self._draw_end_screen = (x, y)
                 return
+            # Let imgui handle widget drags (sliders, trackbar)
+            if imgui.get_io().want_capture_mouse:
+                return
+            # 3D viewport — camera controls
             super().on_mouse_drag_event(x, y, dx, dy)
 
         def on_mouse_release_event(self, x, y, button):
@@ -1073,10 +1079,10 @@ def main():
                 self._render_text_labels()
             w, h = self.wnd.size
             imgui.set_next_window_position(0, 0, imgui.ONCE)
-            imgui.set_next_window_size(self.ui_panel_width, h, imgui.ALWAYS)
+            imgui.set_next_window_size(self.ui_panel_width, h - 95, imgui.ALWAYS)
             imgui.begin(
                 "OBB Controls",
-                flags=imgui.WINDOW_NO_MOVE | imgui.WINDOW_NO_RESIZE,
+                flags=imgui.WINDOW_NO_MOVE | imgui.WINDOW_NO_RESIZE | imgui.WINDOW_NO_BRING_TO_FRONT_ON_FOCUS,
             )
             self._render_main_controls()
             imgui.end()
@@ -1094,7 +1100,7 @@ def main():
                 imgui.set_next_window_size(panel_w, panel_h, imgui.ALWAYS)
                 expanded, _ = imgui.begin(
                     "RGB View",
-                    flags=imgui.WINDOW_NO_RESIZE | imgui.WINDOW_NO_MOVE,
+                    flags=imgui.WINDOW_NO_RESIZE | imgui.WINDOW_NO_MOVE | imgui.WINDOW_NO_BRING_TO_FRONT_ON_FOCUS,
                 )
                 if expanded:
                     avail_w, avail_h = imgui.get_content_region_available()
@@ -1357,6 +1363,7 @@ def main():
                 "##owl_prompt", self._owl_text, 256,
                 flags=imgui.INPUT_TEXT_ENTER_RETURNS_TRUE,
             )
+            self._owl_text_active = imgui.is_item_active()
             if enter_pressed:
                 imgui.set_keyboard_focus_here(-1)
             imgui.pop_item_width()
@@ -1665,8 +1672,8 @@ def main():
             """Override to sync follow_view with play/pause."""
             # When imgui text input is focused, forward key to imgui but
             # don't process viewer shortcuts (space, arrows, etc.)
-            io = imgui.get_io()
-            if io.want_capture_keyboard:
+            # Only block viewer shortcuts when the OWL text input is active
+            if getattr(self, "_owl_text_active", False):
                 self.imgui.key_event(key, action, modifiers)
                 return
 
