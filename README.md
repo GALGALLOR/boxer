@@ -18,17 +18,18 @@ In this repo, we provide examples for running on a variety of sample data source
 We tested on MacOS (with mps acceleration) and Fedora (with CUDA acceleration).
 
 ```bash
+# Create conda environment
 conda create -n boxer python=3.12
 conda activate boxer
 
 # Core dependencies for running Boxer
-pip install numpy opencv-python tqdm 'torch>=2.0' 
+pip install 'torch>=2.0' numpy opencv-python tqdm  
 
 # To support Project Aria loading
 pip install projectaria-tools
 
 # 3D interactive viewer for view_*.py scripts
-pip install moderngl moderngl-window imgui[glfw] pyrr
+pip install moderngl moderngl-window imgui[glfw]
 ```
 
 ### Download Model Checkpoints

@@ -57,11 +57,41 @@ import imgui
 import moderngl_window as mglw
 import numpy as np
 from moderngl_window.integrations.imgui import ModernglWindowRenderer
-from pyrr import Matrix44
-
 scale_factor = 1
 if platform.system() == "Linux":
     scale_factor = 2
+
+
+def _perspective_projection(fovy, aspect, near, far):
+    """Build a perspective projection matrix (column-major, OpenGL convention)."""
+    f = 1.0 / np.tan(np.radians(fovy) / 2.0)
+    m = np.zeros((4, 4), dtype="f4")
+    m[0, 0] = f / aspect
+    m[1, 1] = f
+    m[2, 2] = (far + near) / (near - far)
+    m[3, 2] = (2.0 * far * near) / (near - far)
+    m[2, 3] = -1.0
+    return m
+
+
+def _look_at(eye, target, up):
+    """Build a look-at view matrix matching pyrr's column-major convention."""
+    eye = np.asarray(eye, dtype="f4")
+    target = np.asarray(target, dtype="f4")
+    up = np.asarray(up, dtype="f4")
+    f = target - eye
+    f = f / np.linalg.norm(f)
+    s = np.cross(f, up)
+    s = s / np.linalg.norm(s)
+    u = np.cross(s, f)
+    m = np.eye(4, dtype="f4")
+    m[0:3, 0] = s
+    m[0:3, 1] = u
+    m[0:3, 2] = -f
+    m[3, 0] = -np.dot(s, eye)
+    m[3, 1] = -np.dot(u, eye)
+    m[3, 2] = np.dot(f, eye)
+    return m
 
 
 class OrbitViewer(mglw.WindowConfig):
@@ -175,7 +205,7 @@ class OrbitViewer(mglw.WindowConfig):
         """
         pass
 
-    def get_camera_matrices(self) -> tuple[Matrix44, Matrix44, Matrix44]:
+    def get_camera_matrices(self) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Get camera transformation matrices.
 
         Returns:
@@ -183,7 +213,7 @@ class OrbitViewer(mglw.WindowConfig):
         """
         # Projection matrix
         aspect_ratio = self.window_size[0] / self.window_size[1]
-        projection = Matrix44.perspective_projection(45.0, aspect_ratio, 0.1, 100.0)
+        projection = _perspective_projection(45.0, aspect_ratio, 0.1, 100.0)
 
         # Calculate camera position from spherical coordinates (Z-up)
         azimuth_rad = np.radians(self.camera_azimuth)
@@ -196,17 +226,17 @@ class OrbitViewer(mglw.WindowConfig):
         camera_pos = self.camera_target + np.array([camera_x, camera_y, camera_z])
 
         # View matrix
-        view = Matrix44.look_at(
+        view = _look_at(
             tuple(camera_pos),
             tuple(self.camera_target),
             (0.0, 0.0, 1.0),  # Z-up (gravity direction)
         )
 
         # Model matrix (identity - no transformation)
-        model = Matrix44.identity()
+        model = np.eye(4, dtype="f4")
 
         # Combined MVP
-        mvp = projection * view * model
+        mvp = model @ view @ projection
 
         return projection, view, mvp
 
@@ -1180,7 +1210,7 @@ class OBBViewer(OrbitViewer):
         """Use active 3D viewport aspect so camera matches split-screen view."""
         vw, vh = self._get_3d_viewport_size()
         aspect_ratio = vw / vh
-        projection = Matrix44.perspective_projection(45.0, aspect_ratio, 0.1, 100.0)
+        projection = _perspective_projection(45.0, aspect_ratio, 0.1, 100.0)
 
         azimuth_rad = np.radians(self.camera_azimuth)
         elevation_rad = np.radians(self.camera_elevation)
@@ -1189,12 +1219,12 @@ class OBBViewer(OrbitViewer):
         camera_z = self.camera_distance * np.sin(elevation_rad)
         camera_pos = self.camera_target + np.array([camera_x, camera_y, camera_z])
 
-        view = Matrix44.look_at(
+        view = _look_at(
             tuple(camera_pos),
             tuple(self.camera_target),
             (0.0, 0.0, 1.0),
         )
-        mvp = projection * view * Matrix44.identity()
+        mvp = np.eye(4, dtype="f4") @ view @ projection
         return projection, view, mvp
 
     def __init__(
@@ -2172,7 +2202,7 @@ class OBBViewer(OrbitViewer):
         Returns:
             (screen_x, screen_y, is_visible) where is_visible indicates if the point is in front of camera
         """
-        # Ensure mvp is a numpy array (convert from Matrix44 if needed)
+        # Ensure mvp is a numpy array
         if not isinstance(mvp, np.ndarray):
             mvp = np.asarray(mvp, dtype=np.float32)
 
@@ -2180,7 +2210,7 @@ class OBBViewer(OrbitViewer):
         pos_4d = np.array([pos_3d[0], pos_3d[1], pos_3d[2], 1.0], dtype=np.float32)
 
         # Transform to clip space using column-major order (OpenGL style)
-        # Transpose the MVP matrix to handle pyrr's Matrix44 format correctly
+        # Transpose the MVP matrix (row-major numpy → column-major OpenGL)
         clip_pos = mvp.T @ pos_4d
 
         # Check if behind camera (negative w or z)
@@ -2257,7 +2287,7 @@ class OBBViewer(OrbitViewer):
         w, h = self._get_3d_viewport_size()
         vp_x = full_w - w  # viewport x offset (panels on left)
 
-        # Convert Matrix44 to numpy array
+        # Convert to numpy array
         mvp_array = np.array(mvp, dtype=np.float32)
 
         text_col = imgui.get_color_u32_rgba(1.0, 1.0, 1.0, 1.0)
@@ -4288,7 +4318,7 @@ class TrackerViewer(SequenceOBBViewer):
             # Use 3D viewport aspect ratio instead of full window
             vw, vh = self._get_3d_viewport_size()
             aspect_ratio = vw / vh
-            projection = Matrix44.perspective_projection(45.0, aspect_ratio, 0.1, 100.0)
+            projection = _perspective_projection(45.0, aspect_ratio, 0.1, 100.0)
 
             azimuth_rad = np.radians(self.camera_azimuth)
             elevation_rad = np.radians(self.camera_elevation)
@@ -4300,13 +4330,13 @@ class TrackerViewer(SequenceOBBViewer):
             )
             camera_z = self.camera_distance * np.sin(elevation_rad)
             camera_pos = self.camera_target + np.array([camera_x, camera_y, camera_z])
-            view = Matrix44.look_at(
+            view = _look_at(
                 tuple(camera_pos),
                 tuple(self.camera_target),
                 (0.0, 0.0, 1.0),
             )
             # Match OBBViewer camera convention exactly to avoid split-view offsets.
-            mvp = projection * view * Matrix44.identity()
+            mvp = np.eye(4, dtype="f4") @ view @ projection
             return projection, view, mvp
 
         ts = self.sorted_timestamps[self.current_frame_idx]
@@ -4356,13 +4386,13 @@ class TrackerViewer(SequenceOBBViewer):
 
         vw, vh = self._get_3d_viewport_size()
         aspect = vw / vh
-        projection = Matrix44.perspective_projection(45.0, aspect, 0.1, 100.0)
-        view = Matrix44.look_at(
+        projection = _perspective_projection(45.0, aspect, 0.1, 100.0)
+        view = _look_at(
             tuple(self._smooth_eye),
             tuple(self._smooth_target),
             tuple(self._smooth_up),
         )
-        mvp = projection * view * Matrix44.identity()
+        mvp = np.eye(4, dtype="f4") @ view @ projection
         return projection, view, mvp
 
     def _snap_orbit_from_follow(self):

@@ -21,7 +21,6 @@ import imgui
 import numpy as np
 import torch
 
-from pyrr import Matrix44
 
 from boxernet.boxernet import BoxerNet, sdp_to_patches
 from owl.owl_wrapper import OwlWrapper
@@ -33,6 +32,8 @@ from utils.demo_utils import CKPT_PATH
 from utils.image import render_depth_patches
 from utils.viewer_3d import scale_factor
 from utils.viewer_3d import (
+    _look_at,
+    _perspective_projection,
     add_common_args,
     build_seq_ctx,
     launch_viewer,
@@ -362,15 +363,15 @@ def main():
 
             vw, vh = self._get_3d_viewport_size()
             aspect = vw / vh
-            projection = Matrix44.perspective_projection(
+            projection = _perspective_projection(
                 45.0, aspect, 0.1, 100.0
             )
-            view = Matrix44.look_at(
+            view = _look_at(
                 tuple(self._smooth_eye),
                 tuple(self._smooth_target),
                 tuple(self._smooth_up),
             )
-            mvp = projection * view * Matrix44.identity()
+            mvp = np.eye(4, dtype="f4") @ view @ projection
             return projection, view, mvp
 
         def _focus_on_current_frame(self):
