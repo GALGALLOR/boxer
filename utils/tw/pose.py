@@ -9,7 +9,8 @@ from typing import Dict, List, Tuple, Union
 import numpy as np
 import torch
 import torch.nn.functional as F
-from .tensor_wrapper import autocast, autoinit, smart_stack, TensorWrapper
+
+from .tensor_wrapper import TensorWrapper, autocast, autoinit, smart_stack
 
 
 def quat_to_rotmat(qw, qx, qy, qz):

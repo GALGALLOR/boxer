@@ -28,6 +28,7 @@ from typing import List, Optional
 
 import numpy as np
 import torch
+
 from utils.file_io import ObbCsvWriter2, read_obb_csv
 from utils.tw.obb import ObbTW, iou_mc7, iou_mc7_sparse
 from utils.tw.pose import PoseTW, rotation_from_euler
@@ -37,7 +38,6 @@ from utils.tw.tensor_utils import (
     tensor2string,
     unpad_string,
 )
-
 
 # =============================================================================
 # Shared helper functions (used by both BoundingBox3DFuser and BoundingBox3DTracker)

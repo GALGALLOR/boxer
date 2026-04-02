@@ -9,8 +9,8 @@ import cv2
 import numpy as np
 import torch
 
-from .pose import get_T_rot_z, IdentityPose, PoseTW
-from .tensor_wrapper import autocast, autoinit, smart_cat, TensorWrapper
+from .pose import IdentityPose, PoseTW, get_T_rot_z
+from .tensor_wrapper import TensorWrapper, autocast, autoinit, smart_cat
 
 
 # Sample some random pixels in a circle around the camera center.
@@ -1461,7 +1461,7 @@ def kb4_project(
     Returns:
         uv: (B,N,2) pixel coordinates
     """
-    print(f"==> warning kb4 project, work in progress!!!")
+    print("==> warning kb4 project, work in progress!!!")
     assert rays.ndim == 3 or rays.ndim == 4
     assert rays.size(-1) == 3
     assert params.ndim == 2 or params.ndim == 3
@@ -1502,7 +1502,7 @@ def kb4_unproject(
     Returns:
         rays:  (B,N,3) unit-length rays in camera coordinates
     """
-    print(f"==> warning kb4 unproject, work in progress!!!")
+    print("==> warning kb4 unproject, work in progress!!!")
     assert uv.ndim == 3 or uv.ndim == 4
     assert uv.size(-1) == 2
     assert params.ndim == 2 or params.ndim == 3

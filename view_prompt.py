@@ -25,26 +25,23 @@ import imgui
 import numpy as np
 import torch
 
-
 from boxernet.boxernet import BoxerNet, sdp_to_patches
 from owl.owl_wrapper import OwlWrapper
-from utils.tw.camera import CameraTW
-from utils.tw.obb import BB3D_LINE_ORDERS, ObbTW
-from utils.tw.pose import PoseTW
-from utils.tw.tensor_utils import find_nearest2
 from utils.demo_utils import CKPT_PATH
 from utils.image import render_depth_patches
-from utils.viewer_3d import scale_factor
+from utils.tw.camera import CameraTW
+from utils.tw.obb import BB3D_LINE_ORDERS, ObbTW
+from utils.tw.tensor_utils import find_nearest2
 from utils.viewer_3d import (
+    SequenceOBBViewer,
     _look_at,
     _perspective_projection,
     add_common_args,
     build_seq_ctx,
     launch_viewer,
     load_common,
-    SequenceOBBViewer,
+    scale_factor,
 )
-
 
 # Saturated colors visible on both light and dark backgrounds
 _BOX_COLORS = [
@@ -91,7 +88,9 @@ def main():
         device = "cpu"
     boxernet = BoxerNet.load_from_checkpoint(args.ckpt, device=device)
     if args.force_precision is not None:
-        precision_dtype = torch.bfloat16 if args.force_precision == "bfloat16" else torch.float32
+        precision_dtype = (
+            torch.bfloat16 if args.force_precision == "bfloat16" else torch.float32
+        )
     elif device == "cuda" and torch.cuda.is_bf16_supported():
         precision_dtype = torch.bfloat16
     else:
@@ -99,7 +98,10 @@ def main():
 
     # Load OWLv2 open-vocabulary detector
     owl = OwlWrapper(
-        device, text_prompts=["object"], min_confidence=0.2, precision=args.force_precision
+        device,
+        text_prompts=["object"],
+        min_confidence=0.2,
+        precision=args.force_precision,
     )
 
     # Build one timed_obbs entry per actual RGB frame (not per pose timestamp).

@@ -10,17 +10,17 @@
 import argparse
 import os
 
-from utils.viewer_3d import scale_factor
+from utils.file_io import read_obb_csv
 from utils.viewer_3d import (
+    TrackerViewer,
     add_common_args,
     build_seq_ctx,
     launch_viewer,
     load_common,
     resolve_bb2d_csv,
+    scale_factor,
     subsample_timed_obbs,
-    TrackerViewer,
 )
-from utils.file_io import read_obb_csv
 
 
 def main():

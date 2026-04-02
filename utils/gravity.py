@@ -5,7 +5,8 @@
 # pyre-unsafe
 import numpy as np
 import torch
-from utils.tw.pose import PoseTW, rotation_from_euler
+
+from utils.tw.pose import PoseTW
 
 GRAVITY_DIRECTION_VIO = np.array([0.0, 0.0, -1.0], np.float32)
 

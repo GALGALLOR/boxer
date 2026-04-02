@@ -10,12 +10,12 @@ import unittest
 
 import numpy as np
 import torch
+
 from utils.tw.tensor_wrapper import (
+    TensorWrapper,
     autocast,
-    autoinit,
     smart_cat,
     smart_stack,
-    TensorWrapper,
 )
 
 

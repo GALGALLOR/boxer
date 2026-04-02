@@ -11,16 +11,16 @@ import argparse
 import os
 
 import torch
+
+from utils.demo_utils import DEFAULT_SEQ, EVAL_PATH
+from utils.file_io import read_obb_csv
 from utils.viewer_3d import (
+    OBBViewer,
     launch_viewer,
     resolve_input,
+    scale_factor,
     subsample_timed_obbs,
-    OBBViewer,
 )
-from utils.viewer_3d import scale_factor
-from utils.file_io import read_obb_csv
-from utils.demo_utils import EVAL_PATH
-from utils.demo_utils import DEFAULT_SEQ
 
 
 def main():
@@ -51,7 +51,7 @@ def main():
     print(f"==> Loading OBBs from {csv_path}")
     if not os.path.exists(csv_path):
         print(f"\n[ERROR] CSV not found: {csv_path}")
-        print(f"\nRun BoxerNet first to generate it:\n")
+        print("\nRun BoxerNet first to generate it:\n")
         cmd = f"  python run_boxer.py --input {seq_name} --skip_viz"
         if args.write_name != "boxer":
             cmd += f" --write_name {args.write_name}"

@@ -26,8 +26,8 @@ import subprocess
 import sys
 import tempfile
 import urllib.request
-import zlib
 import zipfile
+import zlib
 
 OMNI3D_JSON_URL = "https://dl.fbaipublicfiles.com/omni3d_data/Omni3D_json.zip"
 SUNRGBD_ZIP_URL = "https://rgbd.cs.princeton.edu/data/SUNRGBD.zip"
@@ -332,7 +332,7 @@ def main():
         print(
             f"\nDownloading {len(needed)} scenes from SUNRGBD.zip via range requests..."
         )
-        print(f"  (central directory is ~63 MB, one-time cost)")
+        print("  (central directory is ~63 MB, one-time cost)")
 
         rz_sun = RemoteZip(SUNRGBD_ZIP_URL)
         if not rz_sun.open():
@@ -375,8 +375,8 @@ def main():
     print(f"Wrote trimmed JSON: {out_json} ({len(selected)} images)")
 
     print(f"\nDone! Sample data at: {args.output_dir}")
-    print(f"\nRun Boxer on it:")
-    print(f"  python run_boxer.py --input SUNRGBD --max_n 5")
+    print("\nRun Boxer on it:")
+    print("  python run_boxer.py --input SUNRGBD --max_n 5")
 
 
 if __name__ == "__main__":

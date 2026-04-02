@@ -156,7 +156,7 @@ def main():
             elif e.code == 404:
                 print(f"\nScene '{args.scene}' not found in scannet_frames_25k.")
                 print("This subset contains ~25k frames from select ScanNet scenes.")
-                print(f"Try a different scene ID, or download the full dataset from:")
+                print("Try a different scene ID, or download the full dataset from:")
                 print("  https://github.com/ScanNet/ScanNet")
                 sys.exit(1)
             else:
@@ -185,10 +185,10 @@ def main():
     print(f"\nVerifying {scene_dir}...")
     if verify_scene(scene_dir):
         print(f"\nDone! Scene ready at: {scene_dir}")
-        print(f"\nRun Boxer on it:")
+        print("\nRun Boxer on it:")
         print(f"  python run_boxer.py --input {args.scene}")
     else:
-        print(f"\nWarning: Scene directory structure looks incomplete.")
+        print("\nWarning: Scene directory structure looks incomplete.")
         print("The loader expects: frames/{{color,depth,pose,intrinsic}}/")
         sys.exit(1)
 

@@ -464,7 +464,6 @@ class OrbitViewer(mglw.WindowConfig):
         self.imgui.unicode_char_entered(char)
 
 
-import argparse
 import colorsys
 import hashlib
 import os
@@ -478,31 +477,27 @@ from dataclasses import dataclass
 from typing import Any, Dict, Optional, Tuple
 
 import cv2
-import torch
-
 import matplotlib.cm as cm
 import moderngl
+import torch
+
 from loaders.aria_loader import AriaLoader
 from loaders.ca_loader import CALoader
+from loaders.omni_loader import OMNI3D_DATASETS, OmniLoader
 from loaders.scannet_loader import ScanNetLoader
-from utils.demo_utils import SAMPLE_DATA_PATH
-from utils.tw.camera import CameraTW
+from utils.demo_utils import DEFAULT_SEQ, EVAL_PATH, SAMPLE_DATA_PATH
 from utils.file_io import (
     dump_obbs_adt,
     load_bb2d_csv,
-    load_obbs_adt,
-    probe_gravity_direction,
     read_obb_csv,
 )
+from utils.taxonomy import BOXY_SEM2NAME, SSI_COLORS_ALT, TEXT2COLORS
+from utils.track_3d_boxes import BoundingBox3DTracker
+from utils.tw.camera import CameraTW
 from utils.tw.obb import BB3D_LINE_ORDERS, ObbTW
 from utils.tw.pose import PoseTW
-from utils.taxonomy import BOXY_SEM2NAME, SSI_COLORS_ALT, TEXT2COLORS
-from utils.tw.tensor_utils import find_nearest2, tensor2string, unpad_string
-from utils.track_3d_boxes import BoundingBox3DTracker
+from utils.tw.tensor_utils import find_nearest2
 from utils.video import make_mp4
-from utils.demo_utils import DEFAULT_SEQ, EVAL_PATH, SAMPLE_DATA_PATH
-from loaders.omni_loader import OMNI3D_DATASETS, OmniLoader
-
 
 # ---------------------------------------------------------------------------
 # Shared viewer utilities (formerly view_boxer.py)
@@ -4816,8 +4811,6 @@ class TrackerViewer(SequenceOBBViewer):
         from owl.clip_tokenizer import TextEmbedder
         from utils.taxonomy import (
             BOXY_SEM2NAME,
-            SSI_COLORS_ALT,
-            TEXT2COLORS,
         )
 
         model = TextEmbedder()

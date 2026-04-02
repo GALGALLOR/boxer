@@ -17,6 +17,8 @@ import unittest
 import cv2
 import numpy as np
 import torch
+
+from boxernet.boxernet import generate_patch_centers
 from utils.tw.camera import (
     CameraTW,
     get_aria_camera,
@@ -24,7 +26,6 @@ from utils.tw.camera import (
     get_kb4_camera,
     random_fisheye_pixels,
 )
-from boxernet.boxernet import generate_patch_centers
 
 RGB_PARAMS = np.float32(
     # pyre-fixme[6]: For 1st argument expected `Union[None, bytes, str,
@@ -289,7 +290,7 @@ class TestOmniLoaderProjection(unittest.TestCase):
         params[:, 3] = 192.0  # cy
         # k0-k5, p0, p1, s0-s3 all zeros (no distortion)
 
-        print(f"\n[TEST] Calling fisheye624_project directly with TorchScript")
+        print("\n[TEST] Calling fisheye624_project directly with TorchScript")
         print(f"[TEST] xyz.shape={xyz.shape}, params.shape={params.shape}")
 
         # This should use the @torch.jit.script compiled version

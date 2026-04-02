@@ -9,10 +9,11 @@ from typing import List, Optional, Tuple, Union
 import torch
 import torch.nn.functional as F
 
+from utils.tw.tensor_utils import tensor2string, unpad_string
+
 from .camera import CameraTW
 from .pose import IdentityPose, PoseTW, rotation_from_euler
-from utils.tw.tensor_utils import pad_string, tensor2string, unpad_string
-from .tensor_wrapper import autocast, autoinit, smart_cat, smart_stack, TensorWrapper
+from .tensor_wrapper import TensorWrapper, autocast, autoinit, smart_cat, smart_stack
 
 # OBB corner numbering diagram for this implementation (the same as pytorch3d
 # https://github.com/facebookresearch/pytorch3d/blob/main/pytorch3d/ops/iou_box3d.py#L111)

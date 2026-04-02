@@ -6,6 +6,7 @@
 
 import pytest
 import torch
+
 from boxernet.boxernet import generate_patch_centers, image_to_patches, masked_median
 
 

@@ -10,6 +10,7 @@ from typing import List, Optional
 import numpy as np
 import torch
 from PIL import Image
+
 from utils.demo_utils import SAMPLE_DATA_PATH
 from utils.tw.obb import ObbTW
 from utils.tw.pose import PoseTW

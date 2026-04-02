@@ -6,7 +6,8 @@ import unittest
 
 import numpy as np
 import torch
-from utils.tw.obb import make_obb, ObbTW, PAD_VAL, iou_mc9
+
+from utils.tw.obb import PAD_VAL, ObbTW, iou_mc9, make_obb
 from utils.tw.pose import PoseTW
 
 torch.set_printoptions(precision=5, sci_mode=False)

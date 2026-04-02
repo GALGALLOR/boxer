@@ -161,10 +161,10 @@ def main():
     print(f"\nVerifying {seq_dir}...")
     if verify_extracted(seq_dir):
         print(f"\nDone! Sequence ready at: {seq_dir}")
-        print(f"\nRun Boxer on it:")
+        print("\nRun Boxer on it:")
         print(f"  python run_boxer.py --input {seq_name}")
     else:
-        print(f"\nWarning: extracted directory structure looks incomplete.")
+        print("\nWarning: extracted directory structure looks incomplete.")
         sys.exit(1)
 
 

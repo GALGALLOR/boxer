@@ -22,13 +22,13 @@ conda create -n boxer python=3.12
 conda activate boxer
 
 # Core dependencies for running Boxer
-pip install 'torch>=2.0' numpy opencv-python tqdm  
+pip install 'torch>=2.0' numpy opencv-python tqdm dill
 
 # To support Project Aria loading
 pip install projectaria-tools
 
 # 3D interactive viewer for view_*.py scripts
-pip install moderngl moderngl-window imgui[glfw]
+pip install moderngl moderngl-window 'imgui[glfw]'
 ```
 
 ## Download Model Checkpoints

@@ -10,11 +10,12 @@ import math
 import unittest
 
 import numpy as np
-from pyquaternion import Quaternion
-
 import torch
+
 from utils.tw.pose import (
+    PoseTW,
     all_rot90,
+    closest_timed_poses,
     find_r90,
     fit_to_SO3,
     get_T_rot_z,
@@ -22,8 +23,6 @@ from utils.tw.pose import (
     interpolation_boundaries_alphas,
     inv_skew_symmetric,
     lower_timed_poses,
-    closest_timed_poses,
-    PoseTW,
     quaternion_to_matrix,
     rotation_from_ortho_6d,
     skew_symmetric,

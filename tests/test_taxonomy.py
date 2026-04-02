@@ -8,6 +8,7 @@ import os
 import tempfile
 
 import pytest
+
 from utils.taxonomy import (
     BOXY_SEM2NAME,
     SSI_COLORS,

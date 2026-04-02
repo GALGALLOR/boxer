@@ -17,8 +17,9 @@ from typing import Optional
 import cv2
 import numpy as np
 import torch
-from utils.tw.obb import ObbTW
+
 from loaders.omni_loader import corners_to_obb
+from utils.tw.obb import ObbTW
 from utils.tw.pose import PoseTW
 
 # ShapeNet category ID to human-readable name

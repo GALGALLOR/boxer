@@ -5,20 +5,20 @@
 # pyre-unsafe
 
 import os
+
 import numpy as np
 import torch
 from torch import nn
 
+from boxernet.dinov3_wrapper import (
+    DINOV3_OUTPUT_DIM,
+    DinoV3Wrapper,
+    batch_dino,
+)
+from utils.gravity import gravity_align_T_world_cam
 from utils.tw.camera import CameraTW
 from utils.tw.obb import ObbTW
 from utils.tw.pose import PoseTW, rotation_from_euler
-from boxernet.dinov3_wrapper import (
-    batch_dino,
-    DINOV3_OUTPUT_DIM,
-    DinoV3Wrapper,
-)
-from utils.gravity import gravity_align_T_world_cam
-
 
 # ---------------------------------------------------------------------------
 # Attention modules
@@ -435,7 +435,7 @@ def smart_load(model_dict, ckpt_dict):
         clean_key = key.replace("_orig_mod.", "")
         cleaned_ckpt_dict[clean_key] = val
     if len(cleaned_ckpt_dict) != len(ckpt_dict):
-        print(f"  Warning: key collisions after stripping _orig_mod. prefix")
+        print("  Warning: key collisions after stripping _orig_mod. prefix")
     ckpt_dict = cleaned_ckpt_dict
 
     new_ckpt_dict = {}

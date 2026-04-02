@@ -5,15 +5,14 @@
 """Tests for utils/track_3d_boxes.py — 3D bounding box tracker."""
 
 import torch
-from utils.tw.obb import make_obb, ObbTW
-from utils.tw.pose import PoseTW
-from utils.tw.tensor_utils import pad_string, string2tensor
+
 from utils.track_3d_boxes import (
-    BoundingBox3DTracker,
-    TrackedInstance,
-    TrackState,
     _SEM_OVERRIDES,
+    BoundingBox3DTracker,
+    TrackState,
 )
+from utils.tw.obb import make_obb
+from utils.tw.tensor_utils import pad_string, string2tensor
 
 
 def _make_det(position, sz=(1.0, 1.0, 1.0), prob=0.9, yaw=0.0, text="chair"):

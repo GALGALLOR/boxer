@@ -15,7 +15,7 @@ import cv2
 import numpy as np
 import torch
 from projectaria_tools.core import data_provider
-from utils.tw.camera import CameraTW
+
 from utils.file_io import (
     load_closed_loop_trajectory,
     load_obbs_adt,
@@ -23,7 +23,7 @@ from utils.file_io import (
     load_semidense,
     probe_gravity_direction,
 )
-from utils.tw.obb import bb2d_from_project_bb3d
+from utils.tw.camera import CameraTW
 from utils.tw.pose import PoseTW
 from utils.tw.tensor_utils import find_nearest2
 

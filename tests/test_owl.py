@@ -16,6 +16,7 @@ Requires: pip install transformers  (only for this test)
 import unittest
 
 import torch
+
 from owl.clip_tokenizer import CLIPTokenizer
 from owl.owl_wrapper import OwlWrapper
 from utils.taxonomy import load_text_labels

@@ -9,7 +9,6 @@ from typing import Optional
 import numpy as np
 import torch
 
-
 # Structure classes filtered out by default across all loaders
 STRUCTURE_CLASSES = {"floor", "wall", "shelter"}
 

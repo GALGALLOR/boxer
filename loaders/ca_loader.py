@@ -6,16 +6,17 @@
 import glob
 import json
 import os
+
 import cv2
 import numpy as np
 import torch
 from PIL import Image
+
+from loaders.base_loader import BaseLoader
 from utils.tw.camera import CameraTW
 from utils.tw.obb import ObbTW
 from utils.tw.pose import PoseTW
 from utils.tw.tensor_utils import pad_string, string2tensor
-
-from loaders.base_loader import BaseLoader
 
 
 def _read_json(path):

@@ -9,6 +9,7 @@
 import unittest
 
 import torch
+
 from boxernet.boxernet import Attention, AttentionBlockV2, FeedForward
 
 

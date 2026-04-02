@@ -5,13 +5,11 @@
 from __future__ import annotations
 
 # pyre-unsafe
-
 # merging files from https://github.com/facebookresearch/dinov3
 #  - dinov3/hub/backbone.py
 #  - dinov3/models/vision_transformer.py
 #  - dinov3/layers/*.py
 #  - dinov3/utils/*.py  (partial)
-
 import logging
 import math
 import os
@@ -25,9 +23,9 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 import torch.nn.init
-from utils.demo_utils import CKPT_PATH
-from torch import nn, Tensor
+from torch import Tensor, nn
 
+from utils.demo_utils import CKPT_PATH
 
 logger = logging.getLogger("dinov3")
 

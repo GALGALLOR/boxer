@@ -7,25 +7,28 @@
 # pyre-unsafe
 import argparse
 import os
-import time
-
 import re
+import time
 
 import cv2
 import numpy as np
 import torch
+from tqdm import tqdm
+
 from boxernet.boxernet import BoxerNet
+from loaders.aria_loader import AriaLoader
+from loaders.ca_loader import CALoader
+from loaders.omni_loader import OMNI3D_DATASETS, OmniLoader
+from loaders.scannet_loader import ScanNetLoader
 from utils.demo_utils import (
     CKPT_PATH,
+    DEFAULT_SEQ,
     EVAL_PATH,
     SAMPLE_DATA_PATH,
     CudaTimer,
-    DEFAULT_SEQ,
 )
-
-
-from utils.file_io import ObbCsvWriter2, read_obb_csv, load_bb2d_csv, save_bb2d_csv
-from utils.image import put_text, torch2cv2, draw_bb3s, render_bb2, render_depth_patches
+from utils.file_io import ObbCsvWriter2, load_bb2d_csv, read_obb_csv, save_bb2d_csv
+from utils.image import draw_bb3s, put_text, render_bb2, render_depth_patches, torch2cv2
 from utils.taxonomy import load_text_labels
 from utils.tw.tensor_utils import (
     pad_string,
@@ -34,12 +37,6 @@ from utils.tw.tensor_utils import (
     unpad_string,
 )
 from utils.video import make_mp4, safe_delete_folder
-from tqdm import tqdm
-
-from loaders.ca_loader import CALoader
-from loaders.omni_loader import OMNI3D_DATASETS, OmniLoader
-from loaders.scannet_loader import ScanNetLoader
-from loaders.aria_loader import AriaLoader
 
 
 def jet_color(val):
@@ -504,7 +501,9 @@ def main():
         T_wr = datum["T_world_rig0"].float()
         datum["bb2d"] = bb2d
         if args.force_precision is not None:
-            precision_dtype = torch.bfloat16 if args.force_precision == "bfloat16" else torch.float32
+            precision_dtype = (
+                torch.bfloat16 if args.force_precision == "bfloat16" else torch.float32
+            )
         elif device == "cuda" and torch.cuda.is_bf16_supported():
             precision_dtype = torch.bfloat16
         else:
@@ -587,13 +586,9 @@ def main():
             timer.start("viz")
             _t0 = time.perf_counter()
 
-            bb2_texts = [
-                f"{l[:10]} (conf2d={s:.2f})" for s, l in zip(scores2d, labels2d)
-            ]
+            bb2_texts = [f"{l[:10]} {s:.2f}" for s, l in zip(scores2d, labels2d)]
             bb2_colors = jet_colors_bgr(scores2d)
-            bb3_texts = [
-                f"{l[:10]} (conf3d={s:.2f})" for s, l in zip(scores3d, labels3d)
-            ]
+            bb3_texts = [f"{l[:10]} {s:.2f}" for s, l in zip(scores3d, labels3d)]
             bb3_colors = jet_colors_bgr(scores3d)
 
             if DEBUG_VIZ:

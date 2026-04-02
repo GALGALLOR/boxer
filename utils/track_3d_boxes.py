@@ -25,19 +25,18 @@ Algorithm per frame:
 7. Age and remove stale tracks (unmatched visible + all invisible)
 """
 
-import os
 import time
 from dataclasses import dataclass
 from enum import Enum
 from typing import List, Optional
 
 import torch
-from utils.tw.camera import CameraTW
+
 from utils.fuse_3d_boxes import (
     align_boxes_r90,
-    angular_distance,
     weighted_yaw_mean,
 )
+from utils.tw.camera import CameraTW
 from utils.tw.obb import ObbTW, iou_mc7
 from utils.tw.pose import PoseTW, rotation_from_euler
 from utils.tw.tensor_utils import (

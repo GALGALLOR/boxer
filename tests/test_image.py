@@ -7,6 +7,7 @@
 import numpy as np
 import pytest
 import torch
+
 from utils.image import normalize, put_text, rotate_image90, string2color, torch2cv2
 
 
