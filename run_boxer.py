@@ -16,7 +16,6 @@ import torch
 from tqdm import tqdm
 
 from boxernet.boxernet import BoxerNet
-from loaders.aria_loader import AriaLoader
 from loaders.ca_loader import CALoader
 from loaders.omni_loader import OMNI3D_DATASETS, OmniLoader
 from loaders.scannet_loader import ScanNetLoader
@@ -234,6 +233,8 @@ def main():
             resize=(args.detector_hw, args.detector_hw),
         )
     else:
+        from loaders.aria_loader import AriaLoader
+
         print(f"==> Sequence name: '{seq_name}'")
         loader = AriaLoader(
             remote_root,

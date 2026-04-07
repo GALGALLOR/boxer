@@ -481,7 +481,6 @@ import cv2
 import moderngl
 import torch
 
-from loaders.aria_loader import AriaLoader
 from loaders.ca_loader import CALoader
 from loaders.omni_loader import OMNI3D_DATASETS, OmniLoader
 from loaders.scannet_loader import ScanNetLoader
@@ -507,6 +506,8 @@ from utils.video import make_mp4
 def build_seq_ctx(input_path, dataset_type):
     """Build viewer context from input path (creates loader for traj/calib/RGB)."""
     if dataset_type == "aria":
+        from loaders.aria_loader import AriaLoader
+
         loader = AriaLoader(
             input_path,
             camera="rgb",
@@ -1072,6 +1073,8 @@ def _load_sequence_context_auto(
         return data
 
     # Default path: AriaLoader for boxy_data / VRS sequences.
+    from loaders.aria_loader import AriaLoader
+
     t_aria0 = time_module.perf_counter()
     root = os.path.join(os.path.expanduser("~"), "boxy_data", seq_name)
     # IMPORTANT: don't cap by detection-frame count; CSV timestamps can be
