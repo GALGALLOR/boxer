@@ -26,10 +26,11 @@ LICENSE file in the root directory of this source tree. -->
                     <p class="author-affiliation">Meta Reality Labs Research</p>
                 </div>
                 <div class="hero-buttons">
-                    <a href="https://github.com/facebookresearch/boxer" class="btn btn-primary">Code & Model</a>
+                    <a href="https://facebookresearch.github.io/boxer" class="btn btn-primary">Project Page</a>
                     <a href="https://youtu.be/YtZD3A70RN4" class="btn btn-secondary">Video</a>
-                    <a href="https://huggingface.co/facebook/boxer" class="btn btn-secondary">HuggingFace</a>
-                    <a href="https://huggingface.co/datasets/facebook/boxer" class="btn btn-secondary">Data</a>
+                    <a href="https://huggingface.co/facebook/boxer" class="btn btn-secondary">HF-Model</a>
+                    <a href="https://huggingface.co/datasets/facebook/boxer" class="btn btn-secondary">HF-Data</a>
+                    <a href="https://github.com/facebookresearch/boxer" class="btn btn-secondary">Code</a>
                 </div>
             </div>
             <div class="hero-media">
@@ -79,6 +80,21 @@ LICENSE file in the root directory of this source tree. -->
                         <p>Per-frame 3D boxes are merged via offline Hungarian-algorithm fusion or online tracking for globally consistent scene-level 3D detections.</p>
                     </div>
                 </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Interactive Demo Section -->
+    <section class="purpose-section">
+        <div class="section-container">
+            <h2 class="section-title">Interactive Demo</h2>
+            <p class="section-description">
+                2D bounding box prompts can be used to quickly annotate and estimate 3D oriented bounding boxes in any scene. Draw a box, and Boxer lifts it to 3D in real time. This is an example from CA-1M.
+            </p>
+            <div class="full-width-image">
+                <video autoplay loop muted playsinline>
+                    <source src="images/ca1m_demo.mp4" type="video/mp4">
+                </video>
             </div>
         </div>
     </section>
@@ -135,18 +151,17 @@ bash scripts/download_aria_data.sh</code></pre>
                 </div>
                 <div class="code-block">
                     <h3>Run Boxer</h3>
-                    <pre><code># Headless inference (10 frames)
-python run_boxer.py --input nym10_gen1 --max_n=10 --skip_viz
+                    <pre><code># Headless inference (90 frames)
+python run_boxer.py --input nym10_gen1 --max_n=90 --skip_viz
 
 # Interactive prompt demo
 python view_prompt.py --input nym10_gen1
 
-# Offline fusion visualization
-python run_boxer.py --input nym10_gen1 --max_n=100 --skip_viz
+# Offline fusion visualization (uses output from headless run above)
 python view_fusion.py --input nym10_gen1
 
 # Online tracker
-python view_tracker.py --input nym10_gen1</code></pre>
+python view_tracker.py --input nym10_gen1 --autoplay</code></pre>
                 </div>
             </div>
             <div class="purpose-grid">
@@ -174,7 +189,7 @@ python view_tracker.py --input nym10_gen1</code></pre>
                 If you find Boxer useful in your research, please consider citing:
             </p>
             <div class="citation-box">
-                <pre><code>@misc{boxer2026,
+                <pre><code>@article{boxer2026,
       title={Boxer: Robust Lifting of Open-World 2D Bounding Boxes to 3D},
       author={Daniel DeTone and Tianwei Shen and Fan Zhang and Lingni Ma and Julian Straub and Richard Newcombe and Jakob Engel},
       year={2026},

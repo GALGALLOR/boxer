@@ -545,6 +545,14 @@ def main():
                     if valid.any():
                         return sdp_w[valid].float()
 
+            # CA1M path: load per-frame depth points
+            if loader is not None and hasattr(loader, "image_tags"):
+                idx = int(find_nearest2(self._rgb_timestamps, ts_ns))
+                frame = loader._load_frame(loader.image_tags[idx])
+                sdp_w = frame["sdp_w"]
+                if len(sdp_w) > 0:
+                    return sdp_w.float()
+
             # ScanNet/other: subsample from global point cloud
             sdp_global = seq_ctx.get("sdp_global", None)
             if sdp_global is not None and len(sdp_global) > 0:
