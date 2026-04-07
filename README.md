@@ -305,7 +305,7 @@ bash tests/run_tests.sh --no-open
 If you find Boxer useful in your research, please consider citing:
 
 ```bibtex
-@misc{boxer2026,
+@article{boxer2026,
       title={Boxer: Robust Lifting of Open-World 2D Bounding Boxes to 3D},
       author={Daniel DeTone and Tianwei Shen and Fan Zhang and Lingni Ma and Julian Straub and Richard Newcombe and Jakob Engel},
       year={2026},
