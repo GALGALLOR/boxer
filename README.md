@@ -62,7 +62,7 @@ Expected to take ~2 mins on mac MPS, <15 secs on CUDA.
 python run_boxer.py --input nym10_gen1 --max_n=90 --track
 ```
 
-This will dump out static images and a video to outputs/nym10_gen1/, e.g. something like this:
+This will dump out static images and a video to `outputs/nym10_gen1/`, e.g. something like this in `outputs/nym10_gen1/boxer_viz_current.png`
 
 ![Run Boxer Demo](docs/images/boxer_viz_current_hohen_gen1.jpg)
 
