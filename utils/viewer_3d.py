@@ -573,11 +573,12 @@ def build_seq_ctx(input_path, dataset_type):
             "uid_to_p3": None,
         }
     elif dataset_type == "scannet":
+        annotation_path = os.path.join(
+            SAMPLE_DATA_PATH, "scannet", "full_annotations.json"
+        )
         loader = ScanNetLoader(
             scene_dir=input_path,
-            annotation_path=os.path.join(
-                SAMPLE_DATA_PATH, "scannet", "full_annotations.json"
-            ),
+            annotation_path=annotation_path if os.path.exists(annotation_path) else None,
             skip_frames=1,
             max_frames=None,
         )

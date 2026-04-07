@@ -101,7 +101,7 @@ class ScanNetLoader(BaseLoader):
     def __init__(
         self,
         scene_dir: str,
-        annotation_path: str,
+        annotation_path: Optional[str] = None,
         skip_frames: int = 1,
         max_frames: Optional[int] = None,
         start_frame: int = 1,
@@ -181,7 +181,12 @@ class ScanNetLoader(BaseLoader):
         }
 
         # Load annotations and precompute scan-space box corners
-        self._load_annotations(annotation_path)
+        if annotation_path is not None and os.path.exists(annotation_path):
+            self._load_annotations(annotation_path)
+        else:
+            self.scan_corners = []
+            self.box_cat_ids = []
+            self.box_cat_names = []
 
         print(
             f"ScanNetLoader: {self.scene_id}, {self.length} frames, "

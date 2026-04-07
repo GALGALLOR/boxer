@@ -132,9 +132,17 @@ You should see a window like this:
 
 ![SUNRGBD Prompt](docs/images/sunrgbd_screenshot.jpg)
 
-## Running on ScanNet
+## Demo #7: Running on ScanNet data
 
-ScanNet must be manually downloaded from https://github.com/scannet/scannet. Once you do that, place the scene directory in sample_data/, e.g. sample_data/scene0707_00, and run just like the above examples.
+ScanNet must be manually downloaded from https://github.com/scannet/scannet. Once you do that, place the scene directory in sample_data/, e.g. sample_data/scene0707_00
+
+Run just like the above examples:
+
+```bash
+python view_prompt.py --input scene0707_00
+```
+
+![ScanNet Prompt](docs/images/scannet_screenshot.jpg)
 
 ## run_boxer.py Usage Details
 
