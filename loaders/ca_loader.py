@@ -81,7 +81,8 @@ class CALoader(BaseLoader):
         remove_structure=True,
         remove_large=True,
         min_dim=0.05,
-        num_samples=10000,
+        num_samples=100000,         # per-frame: dense for BoxerNet input
+        num_samples_global=10000,   # global cloud: sparse for viewer
     ):
         seq_name = seq_name.strip("/")
         # Find the extracted data directory.
@@ -125,6 +126,7 @@ class CALoader(BaseLoader):
         self.device_name = "ipad"
         self.resize = resize
         self.num_samples = num_samples
+        self.num_samples_global = num_samples_global
         self.remove_structure = remove_structure
         self.remove_large = remove_large
         self.max_dimension = 3.0
@@ -249,7 +251,7 @@ class CALoader(BaseLoader):
                 K[1, 2].item(),
                 R_wc,
                 t_wc,
-                self.num_samples,
+                self.num_samples_global,
             )
             if len(sdp_w) > 0:
                 sdp_chunks.append(sdp_w)
