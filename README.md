@@ -1,4 +1,4 @@
-##  Boxer: Robust Lifting of Open-World 2D Bounding Boxes to 3D
+## 🥊 Boxer: Robust Lifting of Open-World 2D Bounding Boxes to 3D
 
 ![Boxer System Architecture](docs/images/boxer_system.jpg)
 
