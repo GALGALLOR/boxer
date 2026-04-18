@@ -45,6 +45,11 @@ def find_ffmpeg(home, ffmpeg_binary=None):
         "/usr/local/fbprojects/ffmpeg-ref/ffmpeg/bin/ffmpeg",  # Some OD comes with this path.
         "%s/ffmpeg/ffmpeg/bin/ffmpeg" % home,
     ]  # Devserver README instruction location.
+    if os.name == 'nt':  # Windows
+        # Add winget ffmpeg path
+        winget_base = os.path.join(os.environ.get('LOCALAPPDATA', ''), 'Microsoft', 'WinGet', 'Packages')
+        winget_ffmpeg = os.path.join(winget_base, 'Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe', 'ffmpeg-8.1-full_build', 'bin', 'ffmpeg.exe')
+        options.insert(1, winget_ffmpeg)  # Insert after "ffmpeg" in case PATH works
     if ffmpeg_binary is None:
         for option in options:
             if cmd_exists(option):
@@ -62,8 +67,8 @@ def find_ffmpeg(home, ffmpeg_binary=None):
 
 def get_video_codec():
     ffmpeg_binary = find_ffmpeg(os.path.expanduser("~"))
-    cmd = f"{ffmpeg_binary} -y -v quiet -codecs | grep 264"
-    result = str(subprocess.check_output(cmd, shell=True))
+    cmd = [ffmpeg_binary, '-y', '-v', 'quiet', '-codecs']
+    result = subprocess.check_output(cmd).decode('utf-8')
     # "libfdk_aac" is better than "aac" because it works with quicktime
     # If libfdk_aac is available, lets use it. On fedora desktop, it is not
     # available unless you install from source, so use "aac" instead.
